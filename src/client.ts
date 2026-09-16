@@ -1,6 +1,7 @@
 import { gunzipSync, inflateSync, inflateRawSync } from "node:zlib";
 import * as path from "node:path";
 import iconv from "iconv-lite";
+import { POHODA_APP_NAME } from "./xml/namespaces.js";
 
 export interface PohodaClientConfig {
   url: string;
@@ -9,9 +10,18 @@ export interface PohodaClientConfig {
   ico: string;
   timeout?: number;
   maxRetries?: number;
+  /** Default for requests that do not say; writes through the outbox always force it on. */
   checkDuplicity?: boolean;
 }
 
+export interface SendOptions {
+  /** Ask mServer to reject a dataPack whose ids were already imported. */
+  checkDuplicity?: boolean;
+  /** STW-Instance header: correlates this request in POHODA's own log. */
+  instance?: string;
+}
+
+/** Thin HTTP client for POHODA mServer: Windows-1250 both ways, Basic auth, serial processing on the server side. */
 export class PohodaClient {
   private readonly baseUrl: string;
   private readonly authHeader: string;
@@ -31,8 +41,10 @@ export class PohodaClient {
     this.authHeader = `Basic ${Buffer.from(creds, "utf-8").toString("base64")}`;
   }
 
-  async sendXml(xml: string): Promise<string> {
+  async sendXml(xml: string, options: SendOptions = {}): Promise<string> {
     const body = new Uint8Array(iconv.encode(xml, "win1250"));
+    const checkDuplicity = options.checkDuplicity ?? this.checkDuplicity;
+    const instance = options.instance ?? `${POHODA_APP_NAME}-${Date.now()}`;
 
     let lastError: Error | null = null;
     for (let attempt = 0; attempt <= this.maxRetries; attempt++) {
@@ -43,9 +55,9 @@ export class PohodaClient {
             "Content-Type": "text/xml",
             "STW-Authorization": this.authHeader,
             "Accept-Encoding": "gzip, deflate",
-            "STW-Application": "pohoda-mcp",
-            "STW-Instance": `mcp-${Date.now()}`,
-            ...(this.checkDuplicity ? { "STW-Check-Duplicity": "true" } : {}),
+            "STW-Application": POHODA_APP_NAME,
+            "STW-Instance": instance,
+            ...(checkDuplicity ? { "STW-Check-Duplicity": "true" } : {}),
           },
           body,
           signal: AbortSignal.timeout(this.timeout),
@@ -72,7 +84,7 @@ export class PohodaClient {
           rawBuf;
 
         const contentType = resp.headers.get("content-type") ?? "";
-        if (contentType.includes("Windows-1250") || contentType.includes("windows-1250")) {
+        if (contentType.toLowerCase().includes("windows-1250")) {
           return iconv.decode(dataBuf, "win1250");
         }
         return dataBuf.toString("utf-8");

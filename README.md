@@ -1,321 +1,141 @@
-# POHODA MCP Server
+# pohoda-connector
 
-![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
-![Node.js Version](https://img.shields.io/badge/node-%3E%3D20-brightgreen)
-![TypeScript](https://img.shields.io/badge/TypeScript-5-blue)
+Universal connector for [Stormware POHODA](https://www.stormware.cz/pohoda/) that AI agents and backends can drive safely:
 
-MCP server for [POHODA](https://www.stormware.cz/pohoda/) (Stormware) accounting software. Manage invoices, stock, orders, bank documents, warehouse, and accounting from any MCP-compatible client.
+- **Writes go through a human.** In the default `approval` mode every `pohoda_create_*` / `update` / `cancel` call
+  becomes a *proposal* — the exact XML that will be sent, frozen with deterministic ids. A human approves it (REST or
+  MCP); a worker sends it. Agents and service tokens can propose and read, never approve. Enforced in code.
+- **Redoable.** `dataPack@id`, `dataPackItem@id` and `extId` are derived from an idempotency key (yours, or a hash of the
+  call). Replaying a proposal after a timeout re-sends the identical XML with `STW-Check-Duplicity`; POHODA's own
+  duplicity check guarantees no second document. Nothing is ever deleted — storno and corrective documents instead.
+- **Reads two ways.** mServer XML exports (`pohoda_list_*`) plus optional **read-only SQL** over the accounting-unit
+  database, validated against the 443-table dictionary generated in [SkyTezz/PohodaSQL](https://github.com/SkyTezz/PohodaSQL).
+- **Two doors.** MCP (stdio or Streamable HTTP) for agents; plain REST (`/v1/...`) for the application that hosts the
+  approval UI. Same tools, same validation, same audit trail.
 
-48 tools covering all major POHODA agendas via mServer XML API.
+Fork of [hlebtkachenko/pohoda-mcp](https://github.com/hlebtkachenko/pohoda-mcp) (MIT). Upstream tool coverage is kept;
+invoices, bank, cash vouchers and internal documents gained pre-accounting, VAT classification, payment form, partner
+binding, requested numbers, foreign currency, advance-invoice deduction, liquidation (paying invoices), storno and
+corrective documents.
 
-## Requirements
-
-- Node.js 20+
-- POHODA with mServer enabled and running
-- mServer user credentials with XML communication rights
-
-## Installation
-
-```bash
-git clone https://github.com/hlebtkachenko/pohoda-mcp.git
-cd pohoda-mcp
-npm ci
-npm run build
-```
-
-## Configuration
-
-### Cursor
-
-`~/.cursor/mcp.json`
-
-```json
-{
-  "mcpServers": {
-    "pohoda": {
-      "command": "node",
-      "args": ["/path/to/pohoda-mcp/dist/index.js"],
-      "env": {
-        "POHODA_URL": "http://localhost:444",
-        "POHODA_USERNAME": "<your-username>",
-        "POHODA_PASSWORD": "<your-password>",
-        "POHODA_ICO": "<your-company-ico>"
-      }
-    }
-  }
-}
-```
-
-### Claude Desktop
-
-`claude_desktop_config.json` ([location](https://modelcontextprotocol.io/quickstart/user#1-open-your-mcp-client))
-
-```json
-{
-  "mcpServers": {
-    "pohoda": {
-      "command": "node",
-      "args": ["/path/to/pohoda-mcp/dist/index.js"],
-      "env": {
-        "POHODA_URL": "http://localhost:444",
-        "POHODA_USERNAME": "<your-username>",
-        "POHODA_PASSWORD": "<your-password>",
-        "POHODA_ICO": "<your-company-ico>"
-      }
-    }
-  }
-}
-```
-
-### Claude Code
-
-`.mcp.json` in your project root, or `~/.claude.json` globally:
-
-```json
-{
-  "mcpServers": {
-    "pohoda": {
-      "command": "node",
-      "args": ["/path/to/pohoda-mcp/dist/index.js"],
-      "env": {
-        "POHODA_URL": "http://localhost:444",
-        "POHODA_USERNAME": "<your-username>",
-        "POHODA_PASSWORD": "<your-password>",
-        "POHODA_ICO": "<your-company-ico>"
-      }
-    }
-  }
-}
-```
-
-### Any MCP client (stdio)
-
-The server uses `stdio` transport. Point your MCP client to:
+## How a write flows
 
 ```
-node /path/to/pohoda-mcp/dist/index.js
+agent/backend ──pohoda_create_invoice──▶ proposal (state=proposed, xml frozen, ids deterministic)
+                                            │
+human (interni, MCP or REST) ─approve─▶ approved ──send (auto or worker)──▶ sending ──▶ sent (pohodaId, number)
+                                            │                                    ├──▶ refused (POHODA said no; new proposal)
+                                            └─reject (reason)─▶ rejected         └──▶ failed (transport; replay with same ids)
 ```
 
-With environment variables set for authentication (see below).
+Every transition is an event (`proposal_events`), every proposal keeps the request XML and POHODA's response XML.
 
-### Environment Variables
+## Roles
 
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `POHODA_URL` | Yes | mServer URL (default port: 444) |
-| `POHODA_USERNAME` | Yes | POHODA user with XML rights |
-| `POHODA_PASSWORD` | Yes | POHODA password |
-| `POHODA_ICO` | Yes | Company IČO (accounting unit) |
-| `POHODA_TIMEOUT` | No | Request timeout in ms (default: 120000) |
-| `POHODA_MAX_RETRIES` | No | Max retries on timeout/503 (default: 2) |
-| `POHODA_CHECK_DUPLICITY` | No | Enable duplicate import checks (default: false) |
+| Role | From | May |
+|---|---|---|
+| `agent` | MCP stdio (`CONNECTOR_PRINCIPAL_ROLE=agent`) or an agent token | read, list proposals, **propose** |
+| `human` | a token the calling application forwards for an operator session | everything above + **approve / reject / send / replay** |
+| `service` | a backend worker token | read, propose, **send / replay** approved proposals |
+
+`CONNECTOR_SANDBOX=true` (test accounting unit only) lets agents approve so renderers can be tested end to end.
 
 ## Tools
 
-### System (3)
+System: `pohoda_connector_info` (read first), `pohoda_status`, `pohoda_company_info`, `pohoda_download_file`.
 
-| Tool | Description |
-|------|-------------|
-| `pohoda_status` | Check mServer status (processing queue, idle/working) |
-| `pohoda_company_info` | Get accounting unit info (company name, database, period) |
-| `pohoda_download_file` | Download a file from POHODA's documents folder |
+Proposals: `pohoda_proposals_list`, `pohoda_proposal_get`, `pohoda_proposal_approve` (human), `pohoda_proposal_reject`
+(human), `pohoda_proposal_send`, `pohoda_proposal_replay`.
 
-### Address Book (4)
+Documents (every create/update/cancel is gated): `pohoda_create_invoice` (all 15 `invoiceType`s, `accounting`,
+`classificationVAT`, `paymentType`, `number` = `numberRequested`, `partner` with `linkToAddress`/`extId`,
+`foreignCurrency`, items with per-line VAT classification and stock links, `advancePayments`),
+`pohoda_create_corrective_invoice`, `pohoda_cancel_invoice`, `pohoda_create_bank` (items and/or `liquidations` of
+invoices by number/id/extId), `pohoda_create_voucher` (cash register, items, `liquidations`), `pohoda_cancel_voucher`,
+`pohoda_create_internal_doc` (e.g. §90 margin VAT), `pohoda_create_address` / `pohoda_update_address`,
+`pohoda_create_order`, `pohoda_create_offer`, `pohoda_create_enquiry`, `pohoda_create_contract`, `pohoda_create_stock` /
+`pohoda_update_stock`, `pohoda_create_prijemka` / `vydejka` / `prodejka` / `prevodka`, `pohoda_create_vyroba`,
+`pohoda_create_service`. `pohoda_delete_*` exist but refuse unless `CONNECTOR_ALLOW_DELETE=true`.
 
-| Tool | Description |
-|------|-------------|
-| `pohoda_list_addresses` | Export contacts with filters (name, IČO, code, date) |
-| `pohoda_create_address` | Create a new contact in address book |
-| `pohoda_update_address` | Update an existing contact by ID |
-| `pohoda_delete_address` | Delete a contact by ID |
+Reads via mServer: `pohoda_list_invoices`, `_bank`, `_vouchers`, `_internal_docs`, `_addresses`, `_orders`, `_offers`,
+`_enquiries`, `_contracts`, `_stock`, `_stores`, `_prijemky`, `_vydejky`, `_prodejky`, `_prevodky`, `_vyroba`,
+`_service`, `_accountancy`, `_balance`, `_movements`, `_vat`, `pohoda_list_settings` (number series, cash registers,
+bank accounts, centres, activities, payment forms, stores, storages, categories, accounting units).
 
-### Invoices (3)
+Reads via SQL (when `POHODA_SQL_*` is set): `pohoda_sql_tables`, `pohoda_sql_describe`, `pohoda_sql_select`
+(parameterised, dictionary-validated, `TOP` capped), `pohoda_sql_journal` (pUD), `pohoda_sql_payments` (Uhrady),
+`pohoda_sql_extid` (sExtID lookup by your key), `pohoda_sql_agendas`.
 
-| Tool | Description |
-|------|-------------|
-| `pohoda_list_invoices` | Export invoices — issued, received, advance, credit notes, receivables, commitments |
-| `pohoda_create_invoice` | Create an invoice with line items, partner, symbols, VAT |
-| `pohoda_delete_invoice` | Delete an invoice by ID |
+Every write tool accepts `idempotencyKey` (1-48 chars `[A-Za-z0-9._:-]`, e.g. `order-invoice:2026002987:r1`) and
+`reason` (shown to the approver).
 
-### Orders (3)
+## REST
 
-| Tool | Description |
-|------|-------------|
-| `pohoda_list_orders` | Export issued/received orders with filters |
-| `pohoda_create_order` | Create an order with items and partner |
-| `pohoda_delete_order` | Delete an order by ID |
+```
+GET  /v1/healthz                       no auth
+GET  /v1/tools                         list tools for this principal
+POST /v1/tools/{name}     {"args":{}}  invoke any tool (validated with the same zod schema)
+GET  /v1/proposals?state=&tool=&limit=
+GET  /v1/proposals/{id}                full proposal + XML + POHODA response + events
+POST /v1/proposals/{id}/approve  {"note"}      human
+POST /v1/proposals/{id}/reject   {"reason"}    human
+POST /v1/proposals/{id}/send                   human | service
+POST /v1/proposals/{id}/replay                 human | service
+POST /mcp                              MCP Streamable HTTP (one session per initialize)
+```
 
-### Offers (2)
+Bearer tokens come from `CONNECTOR_TOKENS`; the token decides the role. Errors: `{"error":{"code","message"},"request_id"}`
+(403 forbidden, 409 invalid proposal state, 400 bad arguments, 422 tool error).
 
-| Tool | Description |
-|------|-------------|
-| `pohoda_list_offers` | Export issued/received offers |
-| `pohoda_create_offer` | Create an offer with items |
-
-### Enquiries (2)
-
-| Tool | Description |
-|------|-------------|
-| `pohoda_list_enquiries` | Export issued/received enquiries |
-| `pohoda_create_enquiry` | Create an enquiry with items |
-
-### Contracts (3)
-
-| Tool | Description |
-|------|-------------|
-| `pohoda_list_contracts` | Export contracts with filters |
-| `pohoda_create_contract` | Create a new contract |
-| `pohoda_delete_contract` | Delete a contract by ID |
-
-### Bank Documents (2)
-
-| Tool | Description |
-|------|-------------|
-| `pohoda_list_bank` | Export bank documents (receipts/expenses) |
-| `pohoda_create_bank` | Create a bank document with items |
-
-### Cash Vouchers (2)
-
-| Tool | Description |
-|------|-------------|
-| `pohoda_list_vouchers` | Export cash register vouchers |
-| `pohoda_create_voucher` | Create a cash voucher (receipt/expense) |
-
-### Internal Documents (2)
-
-| Tool | Description |
-|------|-------------|
-| `pohoda_list_internal_docs` | Export internal accounting documents |
-| `pohoda_create_internal_doc` | Create an internal document |
-
-### Stock / Inventory (5)
-
-| Tool | Description |
-|------|-------------|
-| `pohoda_list_stock` | Export stock items with filters (code, name, store) |
-| `pohoda_create_stock` | Create a new stock item |
-| `pohoda_update_stock` | Update a stock item by ID or code |
-| `pohoda_delete_stock` | Delete a stock item |
-| `pohoda_list_stores` | List all stores (warehouses) |
-
-### Warehouse Documents (8)
-
-| Tool | Description |
-|------|-------------|
-| `pohoda_list_prijemky` | Export receiving documents (příjemky) |
-| `pohoda_create_prijemka` | Create a receiving document |
-| `pohoda_list_vydejky` | Export dispatch documents (výdejky) |
-| `pohoda_create_vydejka` | Create a dispatch document |
-| `pohoda_list_prodejky` | Export sales documents (prodejky) |
-| `pohoda_create_prodejka` | Create a sales document |
-| `pohoda_list_prevodky` | Export transfer documents (převodky) |
-| `pohoda_create_prevodka` | Create a transfer document |
-
-### Production & Service (4)
-
-| Tool | Description |
-|------|-------------|
-| `pohoda_list_vyroba` | Export production documents |
-| `pohoda_create_vyroba` | Create a production document |
-| `pohoda_list_service` | Export service records |
-| `pohoda_create_service` | Create a service record |
-
-### Reports (4)
-
-| Tool | Description |
-|------|-------------|
-| `pohoda_list_accountancy` | Export accounting journal entries |
-| `pohoda_list_balance` | Export saldo/balance records |
-| `pohoda_list_movements` | Export stock movement records |
-| `pohoda_list_vat` | Export VAT classification records |
-
-### Settings (1)
-
-| Tool | Description |
-|------|-------------|
-| `pohoda_list_settings` | Export settings (numerical series, bank accounts, cash registers, centres, activities, payment methods, stores, storage, categories, accounting units) |
-
-## Docker
+## Run
 
 ```bash
-docker build -t pohoda-mcp .
-docker run --rm -i \
-  -e POHODA_URL=http://host.docker.internal:444 \
-  -e POHODA_USERNAME=<your-username> \
-  -e POHODA_PASSWORD=<your-password> \
-  -e POHODA_ICO=<your-company-ico> \
-  pohoda-mcp
+cp .env.example .env   # fill POHODA_* and CONNECTOR_TOKENS
+npm ci && npm run build
+# agents over stdio (Claude Desktop / Claude Code):
+CONNECTOR_TRANSPORT=stdio CONNECTOR_PRINCIPAL_ROLE=agent node dist/index.js
+# backends + agents over HTTP:
+CONNECTOR_TRANSPORT=http node dist/index.js
+# or
+docker compose up -d --build
 ```
 
-Multi-stage build, runs as non-root `node` user.
+MCP client config (stdio):
 
-## Security
-
-- Credentials via environment variables only
-- `STW-Authorization` Basic auth per POHODA mServer specification
-- `STW-Application: pohoda-mcp` header for audit trail in POHODA monitoring
-- `STW-Check-Duplicity` header support to prevent duplicate imports
-- XML escaping handled by xmlbuilder2 for all user-provided values
-- Path traversal prevention for file downloads (normalize + reject `..` prefixed paths)
-- Input validation via Zod on all tool parameters
-
-## Architecture
-
-```
-src/
-  index.ts              Entry point, env validation, tool registration
-  client.ts             HTTP client (STW-Auth, Windows-1250, gzip/deflate, retries)
-  xml/
-    builder.ts          DataPack XML envelope builder (xmlbuilder2)
-    parser.ts           ResponsePack parser (fast-xml-parser)
-    namespaces.ts       40+ POHODA XML namespace URIs
-  core/
-    types.ts            ToolResult interface, ok/err helpers
-    shared.ts           Date conversion, env helpers
-    filters.ts          Filter builder for export requests
-  tools/
-    system.ts           Status, company info, file download (3 tools)
-    addresses.ts        Address book CRUD (4 tools)
-    invoices.ts         All invoice types (3 tools)
-    orders.ts           Issued/received orders (3 tools)
-    offers.ts           Offers (2 tools)
-    enquiries.ts        Enquiries (2 tools)
-    contracts.ts        Contracts (3 tools)
-    bank.ts             Bank documents (2 tools)
-    vouchers.ts         Cash vouchers (2 tools)
-    internal_docs.ts    Internal documents (2 tools)
-    stock.ts            Stock/inventory CRUD (5 tools)
-    warehouse.ts        Příjemky, výdejky, prodejky, převodky (8 tools)
-    production.ts       Production and service records (4 tools)
-    reports.ts          Accountancy, balance, movements, VAT (4 tools)
-    settings.ts         Numerical series, bank accounts, centres... (1 tool)
+```json
+{ "mcpServers": { "pohoda": { "command": "node", "args": ["/opt/pohoda-connector/dist/index.js"], "env": { "POHODA_URL": "http://pohoda-host:444", "POHODA_USERNAME": "…", "POHODA_PASSWORD": "…", "POHODA_ICO": "12345678", "CONNECTOR_PRINCIPAL_ROLE": "agent", "CONNECTOR_SQLITE_PATH": "/var/lib/pohoda-connector/connector.sqlite" } } } }
 ```
 
-## POHODA mServer Setup
+### Proposal store
 
-1. Open POHODA → Settings → mServer
-2. Create a new mServer configuration
-3. Set the listening port (default: 444)
-4. Start the mServer
-5. Ensure the user has XML communication rights (Settings → Access Rights → File → Data Communication)
+`CONNECTOR_STORE=sqlite` (default, one file, Node's built-in `node:sqlite`) or `CONNECTOR_STORE=mssql` — its own
+database on the same SQL Server as POHODA (never inside a `StwPh_*` database). Both keep the same two tables
+(`proposals`, `proposal_events`).
 
-For internet access, use HTTPS or VPN. mServer is primarily designed for local network use.
+### POHODA prerequisites
 
-## Tech Stack
+- mServer configuration for the accounting unit (Účetní jednotky › Databáze › POHODA mServer); the user needs
+  *Datová komunikace* and *POHODA mServer* rights. One running mServer configuration occupies one POHODA licence.
+- For SQL reads: a SQL Server login with `SELECT` only on `StwPh_<ICO>_<year>` (and `StwPh_sys`). POHODA recreates
+  `StwPh_sys` on upgrades — re-grant afterwards.
+- Codes used in mappings (number series, cash registers, bank accounts, pre-accounting, VAT classifications with
+  *Nabízet* ticked) live in POHODA; read them with `pohoda_list_settings` / `pohoda_list_vat` before writing.
 
-- TypeScript
-- `@modelcontextprotocol/sdk`
-- Zod (schema validation)
-- xmlbuilder2 (XML generation)
-- fast-xml-parser (XML parsing)
-- iconv-lite (Windows-1250 encoding)
-- Native `fetch`
+## Development
 
-## API Reference
+```bash
+npm run typecheck && npm test && npm run build
+npm run sync-dictionary        # refresh schema/*.json from ../PohodaSQL or GitHub
+```
 
-- [POHODA XML Documentation](https://www.stormware.cz/xml)
-- [POHODA Developer Guide](https://www.stormware.cz/pohoda/xml/obecny-obchod/pro-vyvojare/)
+Tests use an in-memory SQLite store and a fake mServer; no POHODA needed. XSD element names come from
+`stormware.cz/xml/schema/version_2/` (invoice, bank, voucher, intDoc, addressbook, stock, type, filter, list).
 
-## License
+## Known limits / verify on a sandbox unit first
 
-[MIT](LICENSE)
+- `cancelDocument` / `correctiveDocument` blocks are built per XSD but were not yet exercised against a live POHODA.
+- The duplicate detection on replay matches POHODA's error note against `/duplic/i`; the wording is not part of the XSD.
+- Line prices are unit prices; `payVAT=true` means the price includes VAT. Totals are computed by POHODA.
+- `paymentAccount` (partner's bank account on bank/invoice headers) and Intrastat/MOSS blocks are not exposed.
+
+MIT — see LICENSE.

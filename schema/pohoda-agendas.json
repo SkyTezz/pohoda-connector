@@ -1,0 +1,442 @@
+[
+  {
+    "id": 1,
+    "name_en": "Cash Journal",
+    "name_cs": "Peněžní deník"
+  },
+  {
+    "id": 2,
+    "name_en": "Issued invoices",
+    "name_cs": "Vydané faktury"
+  },
+  {
+    "id": 3,
+    "name_en": "Received invoices",
+    "name_cs": "Přijaté faktury"
+  },
+  {
+    "id": 4,
+    "name_en": "Minor assets",
+    "name_cs": "Drobný majetek"
+  },
+  {
+    "id": 5,
+    "name_en": "Fixed assets",
+    "name_cs": "Dlouhodobý majetek"
+  },
+  {
+    "id": 6,
+    "name_en": "Receipts",
+    "name_cs": "Příjemky"
+  },
+  {
+    "id": 7,
+    "name_en": "Disbursements",
+    "name_cs": "Výdejky"
+  },
+  {
+    "id": 8,
+    "name_en": "Transfer",
+    "name_cs": "Převod"
+  },
+  {
+    "id": 9,
+    "name_en": "Production",
+    "name_cs": "Výroba"
+  },
+  {
+    "id": 10,
+    "name_en": "Shop",
+    "name_cs": "Prodejna"
+  },
+  {
+    "id": 11,
+    "name_en": "Orders received",
+    "name_cs": "Přijaté objednávky"
+  },
+  {
+    "id": 12,
+    "name_en": "Orders issued",
+    "name_cs": "Vydané objednávky"
+  },
+  {
+    "id": 13,
+    "name_en": "Address book",
+    "name_cs": "Adresář"
+  },
+  {
+    "id": 14,
+    "name_en": "Payment orders",
+    "name_cs": "Příkazy k úhradě"
+  },
+  {
+    "id": 15,
+    "name_en": "Trip log",
+    "name_cs": "Deník jízd"
+  },
+  {
+    "id": 16,
+    "name_en": "Vehicle registration",
+    "name_cs": "Evidence vozidel"
+  },
+  {
+    "id": 17,
+    "name_en": "Wages",
+    "name_cs": "Mzdy"
+  },
+  {
+    "id": 18,
+    "name_en": "Other receivables",
+    "name_cs": "Ostatní pohledávky"
+  },
+  {
+    "id": 19,
+    "name_en": "Other commitments",
+    "name_cs": "Ostatní závazky"
+  },
+  {
+    "id": 20,
+    "name_en": "Stocks",
+    "name_cs": "Zásoby"
+  },
+  {
+    "id": 21,
+    "name_en": "Stock kits",
+    "name_cs": "Skladové soupravy"
+  },
+  {
+    "id": 22,
+    "name_en": "Price groups",
+    "name_cs": "Cenové skupiny"
+  },
+  {
+    "id": 24,
+    "name_en": "Access rights",
+    "name_cs": "Přístupová práva"
+  },
+  {
+    "id": 25,
+    "name_en": "HR",
+    "name_cs": "Personalistika"
+  },
+  {
+    "id": 27,
+    "name_en": "Cash register",
+    "name_cs": "Pokladna"
+  },
+  {
+    "id": 28,
+    "name_en": "Banka",
+    "name_cs": "Banka"
+  },
+  {
+    "id": 29,
+    "name_en": "Internal documents",
+    "name_cs": "Interní doklady"
+  },
+  {
+    "id": 30,
+    "name_en": "Disposal",
+    "name_cs": "Likvidace"
+  },
+  {
+    "id": 31,
+    "name_en": "Financial Diary",
+    "name_cs": "Účetní deník"
+  },
+  {
+    "id": 32,
+    "name_en": "Chart of accounts",
+    "name_cs": "Účtová osnova"
+  },
+  {
+    "id": 33,
+    "name_en": "Advance payment",
+    "name_cs": "Předkontace"
+  },
+  {
+    "id": 34,
+    "name_en": "Bank codes",
+    "name_cs": "Kódy bank"
+  },
+  {
+    "id": 35,
+    "name_en": "Number series",
+    "name_cs": "Číselné řady"
+  },
+  {
+    "id": 36,
+    "name_en": "Constant symbols",
+    "name_cs": "Konstantní symboly"
+  },
+  {
+    "id": 37,
+    "name_en": "Activities",
+    "name_cs": "Činnosti"
+  },
+  {
+    "id": 38,
+    "name_en": "Centers",
+    "name_cs": "Střediska"
+  },
+  {
+    "id": 39,
+    "name_en": "Orders",
+    "name_cs": "Zakázky"
+  },
+  {
+    "id": 40,
+    "name_en": "VAT breakdown",
+    "name_cs": "Členění DPH"
+  },
+  {
+    "id": 41,
+    "name_en": "Bank accounts",
+    "name_cs": "Bankovní účty"
+  },
+  {
+    "id": 42,
+    "name_en": "User settings",
+    "name_cs": "Uživatelské nastavení"
+  },
+  {
+    "id": 43,
+    "name_en": "Advance invoices issued",
+    "name_cs": "Vydané zálohové faktury"
+  },
+  {
+    "id": 44,
+    "name_en": "Advance invoices received",
+    "name_cs": "Přijaté zálohové faktury"
+  },
+  {
+    "id": 45,
+    "name_en": "Accounting units",
+    "name_cs": "Účetní jednotky"
+  },
+  {
+    "id": 46,
+    "name_en": "Municipality and zip code",
+    "name_cs": "Obce a PSČ"
+  },
+  {
+    "id": 47,
+    "name_en": "Global settings",
+    "name_cs": "Globální nastavení"
+  },
+  {
+    "id": 48,
+    "name_en": "Earth",
+    "name_cs": "Země"
+  },
+  {
+    "id": 49,
+    "name_en": "Groups",
+    "name_cs": "Skupiny"
+  },
+  {
+    "id": 50,
+    "name_en": "Keys",
+    "name_cs": "Klíče"
+  },
+  {
+    "id": 51,
+    "name_en": "Liabilities",
+    "name_cs": "Závazky"
+  },
+  {
+    "id": 52,
+    "name_en": "Sale prices",
+    "name_cs": "Prodejní ceny"
+  },
+  {
+    "id": 53,
+    "name_en": "Delivery",
+    "name_cs": "Výdej"
+  },
+  {
+    "id": 54,
+    "name_en": "Income",
+    "name_cs": "Příjem"
+  },
+  {
+    "id": 55,
+    "name_en": "Moves",
+    "name_cs": "Pohyby"
+  },
+  {
+    "id": 56,
+    "name_en": "Health insurance",
+    "name_cs": "Zdravotní pojišťovny"
+  },
+  {
+    "id": 57,
+    "name_en": "Warehouses",
+    "name_cs": "Sklady"
+  },
+  {
+    "id": 58,
+    "name_en": "Division of warehouses",
+    "name_cs": "Členění skladů"
+  },
+  {
+    "id": 59,
+    "name_en": "Advance payment",
+    "name_cs": "Předkontace"
+  },
+  {
+    "id": 60,
+    "name_en": "Property location",
+    "name_cs": "Umístění majetku"
+  },
+  {
+    "id": 61,
+    "name_en": "Depreciation plans",
+    "name_cs": "Odpisové plány"
+  },
+  {
+    "id": 62,
+    "name_en": "Items",
+    "name_cs": "Položky"
+  },
+  {
+    "id": 63,
+    "name_en": "Initial account balances",
+    "name_cs": "Počáteční stavy účtů"
+  },
+  {
+    "id": 64,
+    "name_en": "Default Account Statuses",
+    "name_cs": "Výchozí stavy účtů"
+  },
+  {
+    "id": 65,
+    "name_en": "List of drivers",
+    "name_cs": "Seznam řidičů"
+  },
+  {
+    "id": 69,
+    "name_en": "Initial balances",
+    "name_cs": "Počáteční stavy salda"
+  },
+  {
+    "id": 71,
+    "name_en": "Home banking",
+    "name_cs": "Homebanking"
+  },
+  {
+    "id": 72,
+    "name_en": "Foreign currencies",
+    "name_cs": "Cizí měny"
+  },
+  {
+    "id": 75,
+    "name_en": "Course ticket",
+    "name_cs": "Kursový lístek"
+  },
+  {
+    "id": 76,
+    "name_en": "VAT return",
+    "name_cs": "Přiznání DPH"
+  },
+  {
+    "id": 77,
+    "name_en": "Cash registers",
+    "name_cs": "Hotovostní pokladny"
+  },
+  {
+    "id": 78,
+    "name_en": "Analysis",
+    "name_cs": "Analýza"
+  },
+  {
+    "id": 79,
+    "name_en": "Leased property",
+    "name_cs": "Leasingový majetek"
+  },
+  {
+    "id": 80,
+    "name_en": "Hardware",
+    "name_cs": "Hardware"
+  },
+  {
+    "id": 81,
+    "name_en": "Balance",
+    "name_cs": "Saldo"
+  },
+  {
+    "id": 82,
+    "name_en": "Last year's state of profit and loss accounts",
+    "name_cs": "Loňský stav výsledkových účtů"
+  },
+  {
+    "id": 83,
+    "name_en": "Units of measure",
+    "name_cs": "Měrné jednotky"
+  },
+  {
+    "id": 84,
+    "name_en": "Pension funds",
+    "name_cs": "Penzijní fondy"
+  },
+  {
+    "id": 85,
+    "name_en": "Legislation",
+    "name_cs": "Legislativa"
+  },
+  {
+    "id": 86,
+    "name_en": "Online stores",
+    "name_cs": "Internetové obchody"
+  },
+  {
+    "id": 88,
+    "name_en": "Production numbers",
+    "name_cs": "Výrobní čísla"
+  },
+  {
+    "id": 89,
+    "name_en": "Life insurance companies",
+    "name_cs": "Životní pojišťovny"
+  },
+  {
+    "id": 90,
+    "name_en": "Cash registers",
+    "name_cs": "Kasy"
+  },
+  {
+    "id": 91,
+    "name_en": "Stock-taking",
+    "name_cs": "Inventura"
+  },
+  {
+    "id": 92,
+    "name_en": "Offers",
+    "name_cs": "Nabídky"
+  },
+  {
+    "id": 93,
+    "name_en": "Events",
+    "name_cs": "Události"
+  },
+  {
+    "id": 94,
+    "name_en": "Branches",
+    "name_cs": "Pobočky"
+  },
+  {
+    "id": 96,
+    "name_en": "Non-monetary diary",
+    "name_cs": "Nepeněžní deník"
+  },
+  {
+    "id": 97,
+    "name_en": "Requests",
+    "name_cs": "Poptávky"
+  },
+  {
+    "id": 98,
+    "name_en": "Last year's statements",
+    "name_cs": "Výkazy minulého roku"
+  }
+]

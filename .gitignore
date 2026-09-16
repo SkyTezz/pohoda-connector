@@ -1,6 +1,10 @@
 node_modules/
 dist/
+data/
+.env
 *.tgz
 *.tsbuildinfo
-.env
+*.sqlite
+*.sqlite-*
 .DS_Store
+.claude/

@@ -1,115 +1,41 @@
-import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import type { PohodaClient } from "../client.js";
+import type { ConnectorContext } from "../core/context.js";
+import type { ToolHost } from "../core/registry.js";
 import { buildExportRequest } from "../xml/builder.js";
 import { NS } from "../xml/namespaces.js";
 import { parseResponse, extractListData } from "../xml/parser.js";
-import { err, jsonResult } from "../core/types.js";
-import { applyFilter } from "../core/filters.js";
+import { err, jsonResult, type ToolResult } from "../core/types.js";
+import { applyFilter, type ListFilterParams } from "../core/filters.js";
 
-export function registerReportTools(server: McpServer, client: PohodaClient): void {
-  server.tool(
+const dateRange = {
+  dateFrom: z.string().optional().describe("Filter from date (DD.MM.YYYY or YYYY-MM-DD)"),
+  dateTill: z.string().optional().describe("Filter till date (DD.MM.YYYY or YYYY-MM-DD)"),
+};
+
+export function registerReportTools(host: ToolHost, ctx: ConnectorContext): void {
+  const run = async (label: string, listTag: string, requestTag: string, params: ListFilterParams): Promise<ToolResult> => {
+    try {
+      const xml = buildExportRequest({ ico: ctx.client.ico }, listTag, NS.lst, requestTag, (req) => applyFilter(req, params));
+      const data = extractListData(parseResponse(await ctx.client.sendXml(xml)));
+      return jsonResult(label, data, Array.isArray(data) ? data.length : 0);
+    } catch (e) {
+      return err((e as Error).message);
+    }
+  };
+
+  host.tool(
     "pohoda_list_accountancy",
-    "List accountancy records from POHODA. Read-only export. Supports filtering by date range or last changes. Returns JSON array of accountancy records.",
-    {
-      dateFrom: z.string().optional().describe("Filter from date (DD.MM.YYYY or YYYY-MM-DD)"),
-      dateTill: z.string().optional().describe("Filter till date (DD.MM.YYYY or YYYY-MM-DD)"),
-      lastChanges: z.string().optional().describe("Filter by last changes date"),
-    },
-    async (params) => {
-      try {
-        const xml = buildExportRequest(
-          { ico: client.ico },
-          "lst:listAccountancyRequest",
-          NS.lst,
-          "lst:requestAccountancy",
-          (req) => applyFilter(req, params)
-        );
-        const response = await client.sendXml(xml);
-        const parsed = parseResponse(response);
-        const data = extractListData(parsed);
-        return jsonResult("Accountancy", data, Array.isArray(data) ? data.length : 0);
-      } catch (e) {
-        return err((e as Error).message);
-      }
-    }
+    "List accounting journal records (účetní deník) from POHODA via XML export. Read-only. Filter by date range or last changes.",
+    { ...dateRange, lastChanges: z.string().optional().describe("Filter by last changes date") },
+    (params) => run("Accountancy", "lst:listAccountancyRequest", "lst:requestAccountancy", params),
   );
-
-  server.tool(
-    "pohoda_list_balance",
-    "List balance records from POHODA. Read-only export. Supports filtering by date range. Returns JSON array of balance records.",
-    {
-      dateFrom: z.string().optional().describe("Filter from date (DD.MM.YYYY or YYYY-MM-DD)"),
-      dateTill: z.string().optional().describe("Filter till date (DD.MM.YYYY or YYYY-MM-DD)"),
-    },
-    async (params) => {
-      try {
-        const xml = buildExportRequest(
-          { ico: client.ico },
-          "lst:listBalanceRequest",
-          NS.lst,
-          "lst:requestBalance",
-          (req) => applyFilter(req, params)
-        );
-        const response = await client.sendXml(xml);
-        const parsed = parseResponse(response);
-        const data = extractListData(parsed);
-        return jsonResult("Balance", data, Array.isArray(data) ? data.length : 0);
-      } catch (e) {
-        return err((e as Error).message);
-      }
-    }
+  host.tool("pohoda_list_balance", "List balance (saldo) records from POHODA. Read-only. Filter by date range.", dateRange, (params) =>
+    run("Balance", "lst:listBalanceRequest", "lst:requestBalance", params),
   );
-
-  server.tool(
-    "pohoda_list_movements",
-    "List movement records from POHODA. Read-only export. Supports filtering by date range. Returns JSON array of movement records.",
-    {
-      dateFrom: z.string().optional().describe("Filter from date (DD.MM.YYYY or YYYY-MM-DD)"),
-      dateTill: z.string().optional().describe("Filter till date (DD.MM.YYYY or YYYY-MM-DD)"),
-    },
-    async (params) => {
-      try {
-        const xml = buildExportRequest(
-          { ico: client.ico },
-          "lst:listMovementRequest",
-          NS.lst,
-          "lst:requestMovement",
-          (req) => applyFilter(req, params)
-        );
-        const response = await client.sendXml(xml);
-        const parsed = parseResponse(response);
-        const data = extractListData(parsed);
-        return jsonResult("Movements", data, Array.isArray(data) ? data.length : 0);
-      } catch (e) {
-        return err((e as Error).message);
-      }
-    }
+  host.tool("pohoda_list_movements", "List stock movement records from POHODA. Read-only. Filter by date range.", dateRange, (params) =>
+    run("Movements", "lst:listMovementRequest", "lst:requestMovement", params),
   );
-
-  server.tool(
-    "pohoda_list_vat",
-    "List VAT classification records from POHODA. Read-only export. Supports filtering by date range. Returns JSON array of VAT classification records.",
-    {
-      dateFrom: z.string().optional().describe("Filter from date (DD.MM.YYYY or YYYY-MM-DD)"),
-      dateTill: z.string().optional().describe("Filter till date (DD.MM.YYYY or YYYY-MM-DD)"),
-    },
-    async (params) => {
-      try {
-        const xml = buildExportRequest(
-          { ico: client.ico },
-          "lst:listClassificationVATRequest",
-          NS.lst,
-          "lst:requestClassificationVAT",
-          (req) => applyFilter(req, params)
-        );
-        const response = await client.sendXml(xml);
-        const parsed = parseResponse(response);
-        const data = extractListData(parsed);
-        return jsonResult("VAT classification", data, Array.isArray(data) ? data.length : 0);
-      } catch (e) {
-        return err((e as Error).message);
-      }
-    }
+  host.tool("pohoda_list_vat", "List VAT classification records (členění DPH) from POHODA. Read-only.", dateRange, (params) =>
+    run("VAT classification", "lst:listClassificationVATRequest", "lst:requestClassificationVAT", params),
   );
 }

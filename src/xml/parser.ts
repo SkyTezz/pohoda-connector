@@ -41,8 +41,14 @@ const parser = new XMLParser({
     for (const p of arrayPaths) {
       if (jp.endsWith(p)) return true;
     }
-    if (jp.includes("Detail") && jp.includes("Item")) return true;
-    return false;
+    // Document line items: <xxxDetail><xxxItem>. Matching only the last two
+    // segments keeps responsePackItem.invoiceResponse.producedDetails a plain
+    // object (the old "contains Detail and Item anywhere" rule turned it into
+    // arrays and hid the produced id).
+    const segments = jp.split(".");
+    const last = segments[segments.length - 1] ?? "";
+    const parent = segments[segments.length - 2] ?? "";
+    return parent.endsWith("Detail") && last.endsWith("Item");
   },
   parseTagValue: true,
   trimValues: true,
@@ -108,11 +114,18 @@ export function extractListData(response: PohodaResponse): unknown[] {
   return results;
 }
 
-export function extractImportResult(response: PohodaResponse): {
+export interface ImportResult {
   success: boolean;
   message: string;
   producedId?: number;
-} {
+  producedNumber?: string;
+}
+
+function first<T>(value: T | T[] | undefined): T | undefined {
+  return Array.isArray(value) ? value[0] : value;
+}
+
+export function extractImportResult(response: PohodaResponse): ImportResult {
   if (response.items.length === 0) {
     return { success: false, message: "No response items" };
   }
@@ -122,11 +135,18 @@ export function extractImportResult(response: PohodaResponse): {
 
   if (item.data && typeof item.data === "object") {
     const d = item.data as Record<string, unknown>;
-    const detail = d.importDetails ?? d.producedDetails;
+    const detail = first(d.producedDetails ?? d.importDetails) as Record<string, unknown> | undefined;
     if (detail && typeof detail === "object") {
-      const det = detail as Record<string, unknown>;
-      const id = det.id ?? det.number;
-      if (id != null) return { success: ok, message: parts.join("; "), producedId: Number(id) };
+      const id = first(detail.id as number | number[] | undefined);
+      const number = first(detail.number as string | number | Array<string | number> | undefined);
+      const detailNote = first(detail.note as string | string[] | undefined);
+      if (detailNote) parts.push(String(detailNote));
+      return {
+        success: ok,
+        message: parts.join("; "),
+        producedId: id != null ? Number(id) : undefined,
+        producedNumber: number != null ? String(number) : undefined,
+      };
     }
   }
 

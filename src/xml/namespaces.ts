@@ -53,4 +53,4 @@ export const NS = {
 } as const;
 
 export const POHODA_VERSION = "2.0";
-export const POHODA_APP_NAME = "pohoda-mcp";
+export const POHODA_APP_NAME = "pohoda-connector";

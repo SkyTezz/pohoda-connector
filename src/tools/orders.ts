@@ -1,22 +1,26 @@
-import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import type { PohodaClient } from "../client.js";
+import type { ConnectorContext } from "../core/context.js";
+import type { ToolHost } from "../core/registry.js";
+import { registerWriteTool } from "../core/write_tool.js";
 import { buildExportRequest, buildImportDoc, type XMLBuilder } from "../xml/builder.js";
 import { NS } from "../xml/namespaces.js";
-import { parseResponse, extractListData, extractImportResult } from "../xml/parser.js";
-import { ok, err, jsonResult } from "../core/types.js";
+import { parseResponse, extractListData } from "../xml/parser.js";
+import { err, jsonResult } from "../core/types.js";
 import type { ListFilterParams } from "../core/filters.js";
 import { toIsoDate } from "../core/shared.js";
+import { addDate, addExtId, addPartnerIdentity, addText, hasPartner, money, partnerSchema, vatRateEnum } from "../xml/common.js";
 
 const orderTypeEnum = z.enum(["issuedOrder", "receivedOrder"]);
 
 const orderItemSchema = z.object({
-  text: z.string(),
-  quantity: z.number(),
+  text: z.string().max(90),
+  quantity: z.number().default(1),
   unitPrice: z.number(),
-  rateVAT: z.enum(["none", "low", "high"]),
-  unit: z.string().optional(),
-  code: z.string().optional(),
+  payVAT: z.boolean().optional(),
+  rateVAT: vatRateEnum.default("none"),
+  unit: z.string().max(10).optional(),
+  code: z.string().max(64).optional(),
+  stockIds: z.string().max(64).optional(),
 });
 
 function applyOrderFilter(parent: XMLBuilder, params: ListFilterParams & { numberOrder?: string }): void {
@@ -32,8 +36,8 @@ function applyOrderFilter(parent: XMLBuilder, params: ListFilterParams & { numbe
   if (params.lastChanges) ftr.ele(NS.ftr, "ftr:lastChanges").txt(toIsoDate(params.lastChanges));
 }
 
-export function registerOrderTools(server: McpServer, client: PohodaClient): void {
-  server.tool(
+export function registerOrderTools(host: ToolHost, ctx: ConnectorContext): void {
+  host.tool(
     "pohoda_list_orders",
     "List orders from POHODA. Supports filtering by order type, ID, date range, company name, order number, or last changes. Returns JSON array of matching order records.",
     {
@@ -47,134 +51,72 @@ export function registerOrderTools(server: McpServer, client: PohodaClient): voi
     },
     async (params) => {
       try {
-        const xml = buildExportRequest(
-          { ico: client.ico },
-          "lst:listOrderRequest",
-          NS.lst,
-          "lst:requestOrder",
-          (req) => {
-            if (params.orderType) req.att("orderType", params.orderType);
-            applyOrderFilter(req, {
-              id: params.id,
-              dateFrom: params.dateFrom,
-              dateTill: params.dateTill,
-              companyName: params.companyName,
-              numberOrder: params.numberOrder,
-              lastChanges: params.lastChanges,
-            });
-          }
-        );
-        const response = await client.sendXml(xml);
-        const parsed = parseResponse(response);
-        const data = extractListData(parsed);
+        const xml = buildExportRequest({ ico: ctx.client.ico }, "lst:listOrderRequest", NS.lst, "lst:requestOrder", (req) => {
+          if (params.orderType) req.att("orderType", params.orderType);
+          applyOrderFilter(req, { id: params.id, dateFrom: params.dateFrom, dateTill: params.dateTill, companyName: params.companyName, numberOrder: params.numberOrder, lastChanges: params.lastChanges });
+        });
+        const data = extractListData(parseResponse(await ctx.client.sendXml(xml)));
         return jsonResult("Orders", data, Array.isArray(data) ? data.length : 0);
       } catch (e) {
         return err((e as Error).message);
       }
-    }
+    },
   );
 
-  server.tool(
-    "pohoda_create_order",
-    "Create a new order in POHODA. Requires orderType and date. Optional: numberOrder, text, partner details, note, and line items.",
-    {
-      orderType: orderTypeEnum.describe("Order type: issuedOrder or receivedOrder (required)"),
+  registerWriteTool(host, ctx, {
+    name: "pohoda_create_order",
+    description: "Create an order (issued or received) in POHODA with partner and line items.",
+    kind: "create",
+    agenda: "order",
+    schema: {
+      orderType: orderTypeEnum.describe("issuedOrder = vydaná, receivedOrder = přijatá"),
       date: z.string().describe("Order date (DD.MM.YYYY or YYYY-MM-DD)"),
-      numberOrder: z.string().optional().describe("Order number"),
-      text: z.string().optional().describe("Order text/description"),
-      partnerName: z.string().optional().describe("Partner company name"),
-      partnerStreet: z.string().optional().describe("Partner street"),
-      partnerCity: z.string().optional().describe("Partner city"),
-      partnerZip: z.string().optional().describe("Partner ZIP code"),
-      partnerIco: z.string().optional().describe("Partner IČO"),
-      partnerDic: z.string().optional().describe("Partner DIČ"),
-      note: z.string().optional().describe("Note"),
-      items: z
-        .array(orderItemSchema)
-        .optional()
-        .describe("Line items: text, quantity, unitPrice, rateVAT (none|low|high), optional unit, code"),
+      numberOrder: z.string().max(32).optional().describe("Order number"),
+      text: z.string().max(240).optional(),
+      partner: partnerSchema.optional(),
+      note: z.string().optional(),
+      items: z.array(orderItemSchema).optional(),
     },
-    async (params) => {
-      try {
-        const xml = buildImportDoc({ ico: client.ico }, (item) => {
-          const ord = item.ele(NS.ord, "ord:order").att("version", "2.0");
-          const header = ord.ele(NS.ord, "ord:orderHeader");
-
-          header.ele(NS.ord, "ord:orderType").txt(params.orderType);
-          header.ele(NS.ord, "ord:date").txt(toIsoDate(params.date));
-          if (params.numberOrder) header.ele(NS.ord, "ord:numberOrder").txt(params.numberOrder);
-          if (params.text) header.ele(NS.ord, "ord:text").txt(params.text);
-
-          const hasPartner =
-            params.partnerName ??
-            params.partnerStreet ??
-            params.partnerCity ??
-            params.partnerZip ??
-            params.partnerIco ??
-            params.partnerDic;
-          if (hasPartner) {
-            const identity = header.ele(NS.ord, "ord:partnerIdentity");
-            const typAddr = identity.ele(NS.typ, "typ:address");
-            if (params.partnerName) typAddr.ele(NS.typ, "typ:name").txt(params.partnerName);
-            if (params.partnerStreet) typAddr.ele(NS.typ, "typ:street").txt(params.partnerStreet);
-            if (params.partnerCity) typAddr.ele(NS.typ, "typ:city").txt(params.partnerCity);
-            if (params.partnerZip) typAddr.ele(NS.typ, "typ:zip").txt(params.partnerZip);
-            if (params.partnerIco) typAddr.ele(NS.typ, "typ:ico").txt(params.partnerIco);
-            if (params.partnerDic) typAddr.ele(NS.typ, "typ:dic").txt(params.partnerDic);
+    summary: (p) => `${p.orderType} ${p.numberOrder ?? ""} ${p.date}`.trim(),
+    build: (p, ids, c) =>
+      buildImportDoc({ ico: c.client.ico, note: `${p.orderType} ${p.numberOrder ?? ""}`.trim() }, ids, (item) => {
+        const ord = item.ele(NS.ord, "ord:order").att("version", "2.0");
+        const header = ord.ele(NS.ord, "ord:orderHeader");
+        addExtId(header, NS.ord, "ord", ids.extIds, c.config.extSystem);
+        header.ele(NS.ord, "ord:orderType").txt(p.orderType);
+        addDate(header, NS.ord, "ord:date", p.date);
+        addText(header, NS.ord, "ord:numberOrder", p.numberOrder);
+        addText(header, NS.ord, "ord:text", p.text);
+        if (hasPartner(p.partner)) addPartnerIdentity(header, NS.ord, "ord", p.partner, c.config.extSystem);
+        addText(header, NS.ord, "ord:note", p.note);
+        if (p.items?.length) {
+          const detail = ord.ele(NS.ord, "ord:orderDetail");
+          for (const it of p.items) {
+            const el = detail.ele(NS.ord, "ord:orderItem");
+            el.ele(NS.ord, "ord:text").txt(it.text);
+            el.ele(NS.ord, "ord:quantity").txt(String(it.quantity));
+            if (it.unit) el.ele(NS.ord, "ord:unit").txt(it.unit);
+            el.ele(NS.ord, "ord:payVAT").txt(it.payVAT ? "true" : "false");
+            el.ele(NS.ord, "ord:rateVAT").txt(it.rateVAT);
+            el.ele(NS.ord, "ord:homeCurrency").ele(NS.typ, "typ:unitPrice").txt(money(it.unitPrice));
+            if (it.code) el.ele(NS.ord, "ord:code").txt(it.code);
+            if (it.stockIds) el.ele(NS.ord, "ord:stockItem").ele(NS.typ, "typ:stockItem").ele(NS.typ, "typ:ids").txt(it.stockIds);
           }
+        }
+      }),
+  });
 
-          if (params.note) header.ele(NS.ord, "ord:note").txt(params.note);
-
-          if (params.items && params.items.length > 0) {
-            const detail = ord.ele(NS.ord, "ord:orderDetail");
-            for (const it of params.items) {
-              const ordItem = detail.ele(NS.ord, "ord:orderItem");
-              ordItem.ele(NS.ord, "ord:text").txt(it.text);
-              ordItem.ele(NS.ord, "ord:quantity").txt(String(it.quantity));
-              ordItem.ele(NS.ord, "ord:rateVAT").txt(it.rateVAT);
-              ordItem
-                .ele(NS.ord, "ord:homeCurrency")
-                .ele(NS.typ, "typ:unitPrice")
-                .txt(String(it.unitPrice));
-              if (it.unit) ordItem.ele(NS.ord, "ord:unit").txt(it.unit);
-              if (it.code) ordItem.ele(NS.ord, "ord:code").txt(it.code);
-            }
-          }
-        });
-        const response = await client.sendXml(xml);
-        const result = extractImportResult(parseResponse(response));
-        return result.success
-          ? ok(
-              `Order created successfully.${result.producedId != null ? ` ID: ${result.producedId}` : ""} ${result.message}`
-            )
-          : err(result.message);
-      } catch (e) {
-        return err((e as Error).message);
-      }
-    }
-  );
-
-  server.tool(
-    "pohoda_delete_order",
-    "Delete an order from POHODA by ID. Requires the order ID.",
-    {
-      id: z.number().describe("Order ID to delete (required)"),
-    },
-    async (params) => {
-      try {
-        const xml = buildImportDoc({ ico: client.ico }, (item) => {
-          const ord = item.ele(NS.ord, "ord:order").att("version", "2.0");
-          const actionType = ord.ele(NS.ord, "ord:actionType");
-          const del = actionType.ele(NS.ord, "ord:delete");
-          const filter = del.ele(NS.ftr, "ftr:filter");
-          filter.ele(NS.ftr, "ftr:id").txt(String(params.id));
-        });
-        const response = await client.sendXml(xml);
-        const result = extractImportResult(parseResponse(response));
-        return result.success ? ok(`Order deleted successfully. ${result.message}`) : err(result.message);
-      } catch (e) {
-        return err((e as Error).message);
-      }
-    }
-  );
+  registerWriteTool(host, ctx, {
+    name: "pohoda_delete_order",
+    description: "Delete an order from POHODA by ID. Disabled unless CONNECTOR_ALLOW_DELETE=true.",
+    kind: "delete",
+    agenda: "order",
+    schema: { id: z.number().describe("Order ID to delete (required)") },
+    summary: (p) => `delete order id ${p.id}`,
+    build: (p, ids, c) =>
+      buildImportDoc({ ico: c.client.ico, note: `delete order ${p.id}` }, ids, (item) => {
+        const ord = item.ele(NS.ord, "ord:order").att("version", "2.0");
+        ord.ele(NS.ord, "ord:actionType").ele(NS.ord, "ord:delete").ele(NS.ftr, "ftr:filter").ele(NS.ftr, "ftr:id").txt(String(p.id));
+      }),
+  });
 }

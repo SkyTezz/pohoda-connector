@@ -1,25 +1,27 @@
-import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import type { PohodaClient } from "../client.js";
+import type { ConnectorContext } from "../core/context.js";
+import type { ToolHost } from "../core/registry.js";
+import { registerWriteTool } from "../core/write_tool.js";
 import { buildExportRequest, buildImportDoc } from "../xml/builder.js";
 import { NS } from "../xml/namespaces.js";
-import { parseResponse, extractListData, extractImportResult } from "../xml/parser.js";
-import { ok, err, jsonResult } from "../core/types.js";
+import { parseResponse, extractListData } from "../xml/parser.js";
+import { err, jsonResult } from "../core/types.js";
 import { applyFilter, type ListFilterParams } from "../core/filters.js";
-import { toIsoDate } from "../core/shared.js";
+import { addDate, addExtId, addPartnerIdentity, addText, hasPartner, money, partnerSchema, vatRateEnum } from "../xml/common.js";
 
 const offerTypeEnum = z.enum(["issuedOffer", "receivedOffer"]);
 
 const offerItemSchema = z.object({
-  text: z.string(),
-  quantity: z.number(),
+  text: z.string().max(90),
+  quantity: z.number().default(1),
   unitPrice: z.number(),
-  rateVAT: z.enum(["none", "low", "high"]),
-  unit: z.string().optional(),
+  payVAT: z.boolean().optional(),
+  rateVAT: vatRateEnum.default("none"),
+  unit: z.string().max(10).optional(),
 });
 
-export function registerOfferTools(server: McpServer, client: PohodaClient): void {
-  server.tool(
+export function registerOfferTools(host: ToolHost, ctx: ConnectorContext): void {
+  host.tool(
     "pohoda_list_offers",
     "List offers from POHODA. Supports filtering by offer type (issued/received), ID, date range, company name, or last changes. Returns JSON array of matching offer records.",
     {
@@ -32,100 +34,55 @@ export function registerOfferTools(server: McpServer, client: PohodaClient): voi
     },
     async (params) => {
       try {
-        const xml = buildExportRequest(
-          { ico: client.ico },
-          "lst:listOfferRequest",
-          NS.lst,
-          "lst:requestOffer",
-          (req) => {
-            if (params.offerType) req.att("offerType", params.offerType);
-            const filterParams: ListFilterParams = {
-              id: params.id,
-              dateFrom: params.dateFrom,
-              dateTill: params.dateTill,
-              companyName: params.companyName,
-              lastChanges: params.lastChanges,
-            };
-            applyFilter(req, filterParams);
-          }
-        );
-        const response = await client.sendXml(xml);
-        const parsed = parseResponse(response);
-        const data = extractListData(parsed);
+        const xml = buildExportRequest({ ico: ctx.client.ico }, "lst:listOfferRequest", NS.lst, "lst:requestOffer", (req) => {
+          if (params.offerType) req.att("offerType", params.offerType);
+          const filterParams: ListFilterParams = { id: params.id, dateFrom: params.dateFrom, dateTill: params.dateTill, companyName: params.companyName, lastChanges: params.lastChanges };
+          applyFilter(req, filterParams);
+        });
+        const data = extractListData(parseResponse(await ctx.client.sendXml(xml)));
         return jsonResult("Offers", data, Array.isArray(data) ? data.length : 0);
       } catch (e) {
         return err((e as Error).message);
       }
-    }
-  );
-
-  server.tool(
-    "pohoda_create_offer",
-    "Create a new offer in POHODA. Requires offerType and date. Optional: text, partner details, note, and line items.",
-    {
-      offerType: offerTypeEnum.describe("Offer type: issuedOffer or receivedOffer (required)"),
-      date: z.string().describe("Offer date (DD.MM.YYYY or YYYY-MM-DD)"),
-      text: z.string().optional().describe("Offer text/description"),
-      partnerName: z.string().optional().describe("Partner company name"),
-      partnerStreet: z.string().optional().describe("Partner street"),
-      partnerCity: z.string().optional().describe("Partner city"),
-      partnerZip: z.string().optional().describe("Partner ZIP code"),
-      partnerIco: z.string().optional().describe("Partner IČO"),
-      note: z.string().optional().describe("Note"),
-      items: z
-        .array(offerItemSchema)
-        .optional()
-        .describe("Line items: text, quantity, unitPrice, rateVAT (none|low|high), optional unit"),
     },
-    async (params) => {
-      try {
-        const xml = buildImportDoc({ ico: client.ico }, (item) => {
-          const ofr = item.ele(NS.ofr, "ofr:offer").att("version", "2.0");
-          const header = ofr.ele(NS.ofr, "ofr:offerHeader");
-
-          header.ele(NS.ofr, "ofr:offerType").txt(params.offerType);
-          header.ele(NS.ofr, "ofr:date").txt(toIsoDate(params.date));
-          if (params.text) header.ele(NS.ofr, "ofr:text").txt(params.text);
-
-          const hasPartner =
-            params.partnerName ?? params.partnerStreet ?? params.partnerCity ?? params.partnerZip ?? params.partnerIco;
-          if (hasPartner) {
-            const identity = header.ele(NS.ofr, "ofr:partnerIdentity");
-            const typAddr = identity.ele(NS.typ, "typ:address");
-            if (params.partnerName) typAddr.ele(NS.typ, "typ:name").txt(params.partnerName);
-            if (params.partnerStreet) typAddr.ele(NS.typ, "typ:street").txt(params.partnerStreet);
-            if (params.partnerCity) typAddr.ele(NS.typ, "typ:city").txt(params.partnerCity);
-            if (params.partnerZip) typAddr.ele(NS.typ, "typ:zip").txt(params.partnerZip);
-            if (params.partnerIco) typAddr.ele(NS.typ, "typ:ico").txt(params.partnerIco);
-          }
-
-          if (params.note) header.ele(NS.ofr, "ofr:note").txt(params.note);
-
-          if (params.items && params.items.length > 0) {
-            const detail = ofr.ele(NS.ofr, "ofr:offerDetail");
-            for (const it of params.items) {
-              const ofrItem = detail.ele(NS.ofr, "ofr:offerItem");
-              ofrItem.ele(NS.ofr, "ofr:text").txt(it.text);
-              ofrItem.ele(NS.ofr, "ofr:quantity").txt(String(it.quantity));
-              ofrItem.ele(NS.ofr, "ofr:rateVAT").txt(it.rateVAT);
-              ofrItem
-                .ele(NS.ofr, "ofr:homeCurrency")
-                .ele(NS.typ, "typ:unitPrice")
-                .txt(String(it.unitPrice));
-              if (it.unit) ofrItem.ele(NS.ofr, "ofr:unit").txt(it.unit);
-            }
-          }
-        });
-        const response = await client.sendXml(xml);
-        const result = extractImportResult(parseResponse(response));
-        return result.success
-          ? ok(
-              `Offer created successfully.${result.producedId != null ? ` ID: ${result.producedId}` : ""} ${result.message}`
-            )
-          : err(result.message);
-      } catch (e) {
-        return err((e as Error).message);
-      }
-    }
   );
+
+  registerWriteTool(host, ctx, {
+    name: "pohoda_create_offer",
+    description: "Create an offer (issued or received) in POHODA with partner and line items.",
+    kind: "create",
+    agenda: "offer",
+    schema: {
+      offerType: offerTypeEnum.describe("issuedOffer or receivedOffer"),
+      date: z.string().describe("Offer date (DD.MM.YYYY or YYYY-MM-DD)"),
+      text: z.string().max(240).optional(),
+      partner: partnerSchema.optional(),
+      note: z.string().optional(),
+      items: z.array(offerItemSchema).optional(),
+    },
+    summary: (p) => `${p.offerType} ${p.date} ${p.text ?? ""}`.trim(),
+    build: (p, ids, c) =>
+      buildImportDoc({ ico: c.client.ico, note: `${p.offerType} ${p.date}` }, ids, (item) => {
+        const ofr = item.ele(NS.ofr, "ofr:offer").att("version", "2.0");
+        const header = ofr.ele(NS.ofr, "ofr:offerHeader");
+        addExtId(header, NS.ofr, "ofr", ids.extIds, c.config.extSystem);
+        header.ele(NS.ofr, "ofr:offerType").txt(p.offerType);
+        addDate(header, NS.ofr, "ofr:date", p.date);
+        addText(header, NS.ofr, "ofr:text", p.text);
+        if (hasPartner(p.partner)) addPartnerIdentity(header, NS.ofr, "ofr", p.partner, c.config.extSystem);
+        addText(header, NS.ofr, "ofr:note", p.note);
+        if (p.items?.length) {
+          const detail = ofr.ele(NS.ofr, "ofr:offerDetail");
+          for (const it of p.items) {
+            const el = detail.ele(NS.ofr, "ofr:offerItem");
+            el.ele(NS.ofr, "ofr:text").txt(it.text);
+            el.ele(NS.ofr, "ofr:quantity").txt(String(it.quantity));
+            if (it.unit) el.ele(NS.ofr, "ofr:unit").txt(it.unit);
+            el.ele(NS.ofr, "ofr:payVAT").txt(it.payVAT ? "true" : "false");
+            el.ele(NS.ofr, "ofr:rateVAT").txt(it.rateVAT);
+            el.ele(NS.ofr, "ofr:homeCurrency").ele(NS.typ, "typ:unitPrice").txt(money(it.unitPrice));
+          }
+        }
+      }),
+  });
 }

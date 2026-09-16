@@ -1,24 +1,51 @@
-import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import type { PohodaClient } from "../client.js";
+import type { ConnectorContext } from "../core/context.js";
+import type { ToolHost } from "../core/registry.js";
+import { registerWriteTool } from "../core/write_tool.js";
 import { buildExportRequest, buildImportDoc } from "../xml/builder.js";
 import { NS } from "../xml/namespaces.js";
-import { parseResponse, extractListData, extractImportResult } from "../xml/parser.js";
-import { ok, err, jsonResult } from "../core/types.js";
+import { parseResponse, extractListData } from "../xml/parser.js";
+import { err, jsonResult } from "../core/types.js";
 import { applyFilter } from "../core/filters.js";
-import { toIsoDate } from "../core/shared.js";
+import {
+  accountingSchema,
+  addAccounting,
+  addClassificationVAT,
+  addDate,
+  addExtId,
+  addForeignCurrency,
+  addLiquidationItem,
+  addNumberRequested,
+  addPartnerIdentity,
+  addRef,
+  addText,
+  classificationVATSchema,
+  foreignCurrencySchema,
+  hasPartner,
+  liquidationSchema,
+  money,
+  partnerSchema,
+  refSchema,
+  vatRateEnum,
+} from "../xml/common.js";
 
 const bankTypeEnum = z.enum(["receipt", "expense"]);
 
 const bankItemSchema = z.object({
-  text: z.string(),
-  quantity: z.number(),
+  text: z.string().max(90),
+  quantity: z.number().default(1),
   unitPrice: z.number(),
-  rateVAT: z.enum(["none", "low", "high"]),
+  payVAT: z.boolean().optional().describe("true = unitPrice includes VAT"),
+  rateVAT: vatRateEnum.default("none"),
+  accounting: accountingSchema.optional(),
+  classificationVAT: classificationVATSchema.optional(),
+  centre: refSchema.optional(),
+  activity: refSchema.optional(),
+  contract: refSchema.optional(),
 });
 
-export function registerBankTools(server: McpServer, client: PohodaClient): void {
-  server.tool(
+export function registerBankTools(host: ToolHost, ctx: ConnectorContext): void {
+  host.tool(
     "pohoda_list_bank",
     "List bank documents (receipts and expenses) from POHODA. Supports filtering by ID, date range, company name, or last changes. Returns JSON array of matching records.",
     {
@@ -30,101 +57,90 @@ export function registerBankTools(server: McpServer, client: PohodaClient): void
     },
     async (params) => {
       try {
-        const xml = buildExportRequest(
-          { ico: client.ico },
-          "lst:listBankRequest",
-          NS.lst,
-          "lst:requestBank",
-          (req) => applyFilter(req, params)
-        );
-        const response = await client.sendXml(xml);
-        const parsed = parseResponse(response);
-        const data = extractListData(parsed);
+        const xml = buildExportRequest({ ico: ctx.client.ico }, "lst:listBankRequest", NS.lst, "lst:requestBank", (req) => applyFilter(req, params));
+        const data = extractListData(parseResponse(await ctx.client.sendXml(xml)));
         return jsonResult("Bank documents", data, Array.isArray(data) ? data.length : 0);
       } catch (e) {
         return err((e as Error).message);
       }
-    }
-  );
-
-  server.tool(
-    "pohoda_create_bank",
-    "Create a bank document (receipt or expense) in POHODA. Requires bankType and date. Optional: text, account, bankCode, symbols, partner details, note, and line items.",
-    {
-      bankType: bankTypeEnum.describe("Bank document type: receipt or expense (required)"),
-      date: z.string().describe("Document date (DD.MM.YYYY or YYYY-MM-DD)"),
-      text: z.string().optional().describe("Document text/description"),
-      account: z.string().optional().describe("Bank account identifier"),
-      bankCode: z.string().optional().describe("Bank code"),
-      symVar: z.string().optional().describe("Variable symbol"),
-      symConst: z.string().optional().describe("Constant symbol"),
-      symSpec: z.string().optional().describe("Specific symbol"),
-      partnerName: z.string().optional().describe("Partner company name"),
-      partnerStreet: z.string().optional().describe("Partner street"),
-      partnerCity: z.string().optional().describe("Partner city"),
-      partnerZip: z.string().optional().describe("Partner ZIP code"),
-      partnerIco: z.string().optional().describe("Partner IČO"),
-      note: z.string().optional().describe("Note"),
-      items: z
-        .array(bankItemSchema)
-        .optional()
-        .describe("Line items: text, quantity, unitPrice, rateVAT (none|low|high)"),
     },
-    async (params) => {
-      try {
-        const xml = buildImportDoc({ ico: client.ico }, (item) => {
-          const bank = item.ele(NS.bnk, "bnk:bank").att("version", "2.0");
-          const header = bank.ele(NS.bnk, "bnk:bankHeader");
-
-          header.ele(NS.bnk, "bnk:bankType").txt(params.bankType);
-          if (params.account) {
-            header.ele(NS.bnk, "bnk:account").ele(NS.typ, "typ:ids").txt(params.account);
-          }
-          if (params.bankCode) header.ele(NS.bnk, "bnk:bankCode").txt(params.bankCode);
-          header.ele(NS.bnk, "bnk:date").txt(toIsoDate(params.date));
-          if (params.text) header.ele(NS.bnk, "bnk:text").txt(params.text);
-          if (params.symVar) header.ele(NS.bnk, "bnk:symVar").txt(params.symVar);
-          if (params.symConst) header.ele(NS.bnk, "bnk:symConst").txt(params.symConst);
-          if (params.symSpec) header.ele(NS.bnk, "bnk:symSpec").txt(params.symSpec);
-
-          const hasPartner =
-            params.partnerName ?? params.partnerStreet ?? params.partnerCity ?? params.partnerZip ?? params.partnerIco;
-          if (hasPartner) {
-            const identity = header.ele(NS.bnk, "bnk:partnerIdentity");
-            const typAddr = identity.ele(NS.typ, "typ:address");
-            if (params.partnerName) typAddr.ele(NS.typ, "typ:name").txt(params.partnerName);
-            if (params.partnerStreet) typAddr.ele(NS.typ, "typ:street").txt(params.partnerStreet);
-            if (params.partnerCity) typAddr.ele(NS.typ, "typ:city").txt(params.partnerCity);
-            if (params.partnerZip) typAddr.ele(NS.typ, "typ:zip").txt(params.partnerZip);
-            if (params.partnerIco) typAddr.ele(NS.typ, "typ:ico").txt(params.partnerIco);
-          }
-
-          if (params.note) header.ele(NS.bnk, "bnk:note").txt(params.note);
-
-          if (params.items && params.items.length > 0) {
-            const detail = bank.ele(NS.bnk, "bnk:bankDetail");
-            for (const it of params.items) {
-              const bankItem = detail.ele(NS.bnk, "bnk:bankItem");
-              bankItem.ele(NS.bnk, "bnk:text").txt(it.text);
-              bankItem.ele(NS.bnk, "bnk:quantity").txt(String(it.quantity));
-              bankItem.ele(NS.bnk, "bnk:rateVAT").txt(it.rateVAT);
-              bankItem
-                .ele(NS.bnk, "bnk:homeCurrency")
-                .ele(NS.typ, "typ:unitPrice")
-                .txt(String(it.unitPrice));
-            }
-          }
-        });
-        const response = await client.sendXml(xml);
-        const result = extractImportResult(parseResponse(response));
-        return result.success
-          ? ok(
-              `Bank document created successfully.${result.producedId != null ? ` ID: ${result.producedId}` : ""} ${result.message}`
-            )
-          : err(result.message);
-      } catch (e) {
-        return err((e as Error).message);
-      }
-    }
   );
+
+  registerWriteTool(host, ctx, {
+    name: "pohoda_create_bank",
+    description:
+      "Create a bank document (receipt or expense) in POHODA, optionally liquidating (paying) invoices/receivables/commitments by number or extId. This is how a bank movement pairs with an invoice.",
+    kind: "create",
+    agenda: "bank",
+    schema: {
+      bankType: bankTypeEnum.describe("receipt = příjem, expense = výdej"),
+      account: refSchema.optional().describe("Bank account (ids from settings); user default when omitted"),
+      number: z.string().max(32).optional().describe("Requested document number"),
+      statementNumber: z.string().max(10).optional().describe("Statement + movement number (max 10 chars)"),
+      symVar: z.string().max(20).optional().describe("Variable symbol of the movement"),
+      symConst: z.string().max(4).optional(),
+      symSpec: z.string().max(16).optional(),
+      symPar: z.string().max(20).optional(),
+      dateStatement: z.string().describe("Statement date (DD.MM.YYYY or YYYY-MM-DD)"),
+      datePayment: z.string().optional().describe("Payment date (defaults to statement date)"),
+      accounting: accountingSchema.optional(),
+      classificationVAT: classificationVATSchema.optional(),
+      text: z.string().max(240).describe("Document text"),
+      partner: partnerSchema.optional(),
+      centre: refSchema.optional(),
+      activity: refSchema.optional(),
+      contract: refSchema.optional(),
+      foreignCurrency: foreignCurrencySchema.optional(),
+      note: z.string().optional(),
+      intNote: z.string().optional(),
+      extIdText: z.string().optional(),
+      items: z.array(bankItemSchema).optional().describe("Free items (text lines) — use for movements that pay no document"),
+      liquidations: z.array(liquidationSchema).optional().describe("Documents this movement pays (likvidace): agenda + number/extId + amount"),
+    },
+    summary: (p) => `bank ${p.bankType} ${p.dateStatement} VS ${p.symVar ?? "-"} ${p.liquidations?.length ? `pays ${p.liquidations.map((l) => l.sourceDocument.number ?? l.sourceDocument.extId ?? l.sourceDocument.id).join(",")}` : ""}`.trim(),
+    build: (p, ids, c) =>
+      buildImportDoc({ ico: c.client.ico, note: `bank ${p.bankType} ${p.symVar ?? ""}`.trim() }, ids, (item) => {
+        const bank = item.ele(NS.bnk, "bnk:bank").att("version", "2.0");
+        const header = bank.ele(NS.bnk, "bnk:bankHeader");
+        addExtId(header, NS.bnk, "bnk", ids.extIds, c.config.extSystem, p.extIdText);
+        header.ele(NS.bnk, "bnk:bankType").txt(p.bankType);
+        if (p.account) addRef(header, NS.bnk, "bnk:account", p.account);
+        if (p.number) addNumberRequested(header, NS.bnk, "bnk", p.number);
+        addText(header, NS.bnk, "bnk:statementNumber", p.statementNumber);
+        addText(header, NS.bnk, "bnk:symVar", p.symVar);
+        addDate(header, NS.bnk, "bnk:dateStatement", p.dateStatement);
+        addDate(header, NS.bnk, "bnk:datePayment", p.datePayment);
+        if (p.accounting) addAccounting(header, NS.bnk, "bnk", p.accounting);
+        if (p.classificationVAT) addClassificationVAT(header, NS.bnk, "bnk", p.classificationVAT);
+        addText(header, NS.bnk, "bnk:text", p.text);
+        if (hasPartner(p.partner)) addPartnerIdentity(header, NS.bnk, "bnk", p.partner, c.config.extSystem);
+        addText(header, NS.bnk, "bnk:symConst", p.symConst);
+        addText(header, NS.bnk, "bnk:symSpec", p.symSpec);
+        addText(header, NS.bnk, "bnk:symPar", p.symPar);
+        if (p.centre) addRef(header, NS.bnk, "bnk:centre", p.centre);
+        if (p.activity) addRef(header, NS.bnk, "bnk:activity", p.activity);
+        if (p.contract) addRef(header, NS.bnk, "bnk:contract", p.contract);
+        addText(header, NS.bnk, "bnk:note", p.note);
+        addText(header, NS.bnk, "bnk:intNote", p.intNote);
+
+        if (p.items?.length || p.liquidations?.length) {
+          const detail = bank.ele(NS.bnk, "bnk:bankDetail");
+          for (const it of p.items ?? []) {
+            const el = detail.ele(NS.bnk, "bnk:bankItem");
+            el.ele(NS.bnk, "bnk:text").txt(it.text);
+            el.ele(NS.bnk, "bnk:quantity").txt(String(it.quantity));
+            el.ele(NS.bnk, "bnk:payVAT").txt(it.payVAT ? "true" : "false");
+            el.ele(NS.bnk, "bnk:rateVAT").txt(it.rateVAT);
+            el.ele(NS.bnk, p.foreignCurrency ? "bnk:foreignCurrency" : "bnk:homeCurrency").ele(NS.typ, "typ:unitPrice").txt(money(it.unitPrice));
+            if (it.accounting) addAccounting(el, NS.bnk, "bnk", it.accounting);
+            if (it.classificationVAT) addClassificationVAT(el, NS.bnk, "bnk", it.classificationVAT);
+            if (it.centre) addRef(el, NS.bnk, "bnk:centre", it.centre);
+            if (it.activity) addRef(el, NS.bnk, "bnk:activity", it.activity);
+            if (it.contract) addRef(el, NS.bnk, "bnk:contract", it.contract);
+          }
+          for (const liq of p.liquidations ?? []) addLiquidationItem(detail, NS.bnk, "bnk", "bankLiquidationItem", liq, c.config.extSystem, "bank");
+        }
+        if (p.foreignCurrency) addForeignCurrency(bank.ele(NS.bnk, "bnk:bankSummary"), NS.bnk, "bnk", p.foreignCurrency);
+      }),
+  });
 }

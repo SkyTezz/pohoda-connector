@@ -1,64 +1,45 @@
 #!/usr/bin/env node
 
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
-import path from "node:path";
 import { PohodaClient } from "./client.js";
-import { requiredEnv } from "./core/shared.js";
-import { registerSystemTools } from "./tools/system.js";
-import { registerAddressTools } from "./tools/addresses.js";
-import { registerInvoiceTools } from "./tools/invoices.js";
-import { registerOrderTools } from "./tools/orders.js";
-import { registerOfferTools } from "./tools/offers.js";
-import { registerEnquiryTools } from "./tools/enquiries.js";
-import { registerContractTools } from "./tools/contracts.js";
-import { registerBankTools } from "./tools/bank.js";
-import { registerVoucherTools } from "./tools/vouchers.js";
-import { registerInternalDocTools } from "./tools/internal_docs.js";
-import { registerStockTools } from "./tools/stock.js";
-import { registerWarehouseTools } from "./tools/warehouse.js";
-import { registerProductionTools } from "./tools/production.js";
-import { registerReportTools } from "./tools/reports.js";
-import { registerSettingsTools } from "./tools/settings.js";
+import { loadConfig } from "./core/config.js";
+import { startHttpServer } from "./http/server.js";
+import { MssqlOutboxStore } from "./outbox/mssql_store.js";
+import { OutboxService } from "./outbox/service.js";
+import { SqliteOutboxStore } from "./outbox/sqlite_store.js";
+import type { OutboxStore } from "./outbox/store.js";
+import { createRegistry, packageVersion, type ServerDeps } from "./server.js";
+import { loadDictionary } from "./sql/dictionary.js";
+import { SqlReader } from "./sql/reader.js";
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const pkg = JSON.parse(readFileSync(path.resolve(__dirname, "..", "package.json"), "utf-8")) as { version: string };
+async function main(): Promise<void> {
+  const config = loadConfig();
+  const client = new PohodaClient({ ...config.pohoda, checkDuplicity: true });
 
-const client = new PohodaClient({
-  url: requiredEnv("POHODA_URL"),
-  username: requiredEnv("POHODA_USERNAME"),
-  password: requiredEnv("POHODA_PASSWORD"),
-  ico: requiredEnv("POHODA_ICO"),
-  timeout: Number(process.env.POHODA_TIMEOUT ?? "120000"),
-  maxRetries: Number(process.env.POHODA_MAX_RETRIES ?? "2"),
-  checkDuplicity: process.env.POHODA_CHECK_DUPLICITY === "true",
-});
+  const store: OutboxStore = config.store.kind === "mssql" ? new MssqlOutboxStore(config.store.mssql!) : new SqliteOutboxStore(config.store.sqlitePath);
+  await store.init();
+  const outbox = new OutboxService(store, config, client);
 
-const server = new McpServer({
-  name: "pohoda-mcp",
-  version: pkg.version,
-});
+  let sql: SqlReader | undefined;
+  if (config.sql) {
+    sql = new SqlReader(config.sql, loadDictionary());
+    await sql.connect();
+  }
 
-registerSystemTools(server, client);
-registerAddressTools(server, client);
-registerInvoiceTools(server, client);
-registerOrderTools(server, client);
-registerOfferTools(server, client);
-registerEnquiryTools(server, client);
-registerContractTools(server, client);
-registerBankTools(server, client);
-registerVoucherTools(server, client);
-registerInternalDocTools(server, client);
-registerStockTools(server, client);
-registerWarehouseTools(server, client);
-registerProductionTools(server, client);
-registerReportTools(server, client);
-registerSettingsTools(server, client);
+  const deps: ServerDeps = { config, client, outbox, sql };
 
-const transport = new StdioServerTransport();
-server.connect(transport).catch((e) => {
-  console.error("MCP server failed to start:", e);
+  if (config.transport === "http") {
+    const { port } = await startHttpServer(deps);
+    console.error(`pohoda-connector ${packageVersion()} listening on http://${config.http.host}:${port} (mode=${config.writeMode}, sandbox=${config.sandbox}, sql=${sql ? "on" : "off"})`);
+    return;
+  }
+
+  const { mcp } = createRegistry(deps, config.stdioPrincipal, true);
+  await mcp!.connect(new StdioServerTransport());
+  console.error(`pohoda-connector ${packageVersion()} on stdio as ${config.stdioPrincipal.role}:${config.stdioPrincipal.name} (mode=${config.writeMode})`);
+}
+
+main().catch((e) => {
+  console.error("pohoda-connector failed to start:", (e as Error).message);
   process.exit(1);
 });

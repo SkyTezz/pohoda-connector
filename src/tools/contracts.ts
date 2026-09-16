@@ -1,17 +1,18 @@
-import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import type { PohodaClient } from "../client.js";
+import type { ConnectorContext } from "../core/context.js";
+import type { ToolHost } from "../core/registry.js";
+import { registerWriteTool } from "../core/write_tool.js";
 import { buildExportRequest, buildImportDoc } from "../xml/builder.js";
 import { NS } from "../xml/namespaces.js";
-import { parseResponse, extractListData, extractImportResult } from "../xml/parser.js";
-import { ok, err, jsonResult } from "../core/types.js";
+import { parseResponse, extractListData } from "../xml/parser.js";
+import { err, jsonResult } from "../core/types.js";
 import { applyFilter, type ListFilterParams } from "../core/filters.js";
-import { toIsoDate } from "../core/shared.js";
+import { addDate, addPartnerIdentity, addText, hasPartner, partnerSchema } from "../xml/common.js";
 
-export function registerContractTools(server: McpServer, client: PohodaClient): void {
-  server.tool(
+export function registerContractTools(host: ToolHost, ctx: ConnectorContext): void {
+  host.tool(
     "pohoda_list_contracts",
-    "List contracts from POHODA. Supports filtering by ID, date range, company name, or last changes. Returns JSON array of matching contract records.",
+    "List contracts (zakázky) from POHODA. Supports filtering by ID, date range, company name, or last changes. Returns JSON array of matching contract records.",
     {
       id: z.number().optional().describe("Filter by contract ID"),
       dateFrom: z.string().optional().describe("Filter from date (DD.MM.YYYY or YYYY-MM-DD)"),
@@ -21,104 +22,54 @@ export function registerContractTools(server: McpServer, client: PohodaClient): 
     },
     async (params) => {
       try {
-        const xml = buildExportRequest(
-          { ico: client.ico },
-          "lst:listContractRequest",
-          NS.lCon,
-          "lst:requestContract",
-          (req) => {
-            const filterParams: ListFilterParams = {
-              id: params.id,
-              dateFrom: params.dateFrom,
-              dateTill: params.dateTill,
-              companyName: params.companyName,
-              lastChanges: params.lastChanges,
-            };
-            applyFilter(req, filterParams);
-          }
-        );
-        const response = await client.sendXml(xml);
-        const parsed = parseResponse(response);
-        const data = extractListData(parsed);
+        const xml = buildExportRequest({ ico: ctx.client.ico }, "lst:listContractRequest", NS.lCon, "lst:requestContract", (req) => {
+          const filterParams: ListFilterParams = { id: params.id, dateFrom: params.dateFrom, dateTill: params.dateTill, companyName: params.companyName, lastChanges: params.lastChanges };
+          applyFilter(req, filterParams);
+        });
+        const data = extractListData(parseResponse(await ctx.client.sendXml(xml)));
         return jsonResult("Contracts", data, Array.isArray(data) ? data.length : 0);
       } catch (e) {
         return err((e as Error).message);
       }
-    }
+    },
   );
 
-  server.tool(
-    "pohoda_create_contract",
-    "Create a new contract in POHODA. Optional: number, datePlan, text, partner details, note.",
-    {
-      number: z.string().optional().describe("Contract number"),
+  registerWriteTool(host, ctx, {
+    name: "pohoda_create_contract",
+    description: "Create a contract (zakázka) in POHODA. Optional: number, datePlan, text, partner, note.",
+    kind: "create",
+    agenda: "contract",
+    schema: {
+      number: z.string().max(32).optional().describe("Contract number"),
       datePlan: z.string().optional().describe("Planned date (DD.MM.YYYY or YYYY-MM-DD)"),
-      text: z.string().optional().describe("Contract text/description"),
-      partnerName: z.string().optional().describe("Partner company name"),
-      partnerStreet: z.string().optional().describe("Partner street"),
-      partnerCity: z.string().optional().describe("Partner city"),
-      partnerZip: z.string().optional().describe("Partner ZIP code"),
-      partnerIco: z.string().optional().describe("Partner IČO"),
-      note: z.string().optional().describe("Note"),
+      text: z.string().max(240).optional(),
+      partner: partnerSchema.optional(),
+      note: z.string().optional(),
     },
-    async (params) => {
-      try {
-        const xml = buildImportDoc({ ico: client.ico }, (item) => {
-          const con = item.ele(NS.con, "con:contract").att("version", "2.0");
-          const desc = con.ele(NS.con, "con:contractDesc");
+    summary: (p) => `contract ${p.number ?? ""} ${p.text ?? ""}`.trim(),
+    build: (p, ids, c) =>
+      buildImportDoc({ ico: c.client.ico, note: `contract ${p.number ?? ""}`.trim() }, ids, (item) => {
+        const con = item.ele(NS.con, "con:contract").att("version", "2.0");
+        const desc = con.ele(NS.con, "con:contractDesc");
+        addText(desc, NS.con, "con:number", p.number);
+        addDate(desc, NS.con, "con:datePlan", p.datePlan);
+        addText(desc, NS.con, "con:text", p.text);
+        if (hasPartner(p.partner)) addPartnerIdentity(desc, NS.con, "con", p.partner, c.config.extSystem);
+        addText(desc, NS.con, "con:note", p.note);
+      }),
+  });
 
-          if (params.number) desc.ele(NS.con, "con:number").txt(params.number);
-          if (params.datePlan) desc.ele(NS.con, "con:datePlan").txt(toIsoDate(params.datePlan));
-          if (params.text) desc.ele(NS.con, "con:text").txt(params.text);
-
-          const hasPartner =
-            params.partnerName ?? params.partnerStreet ?? params.partnerCity ?? params.partnerZip ?? params.partnerIco;
-          if (hasPartner) {
-            const identity = desc.ele(NS.con, "con:partnerIdentity");
-            const typAddr = identity.ele(NS.typ, "typ:address");
-            if (params.partnerName) typAddr.ele(NS.typ, "typ:name").txt(params.partnerName);
-            if (params.partnerStreet) typAddr.ele(NS.typ, "typ:street").txt(params.partnerStreet);
-            if (params.partnerCity) typAddr.ele(NS.typ, "typ:city").txt(params.partnerCity);
-            if (params.partnerZip) typAddr.ele(NS.typ, "typ:zip").txt(params.partnerZip);
-            if (params.partnerIco) typAddr.ele(NS.typ, "typ:ico").txt(params.partnerIco);
-          }
-
-          if (params.note) desc.ele(NS.con, "con:note").txt(params.note);
-        });
-        const response = await client.sendXml(xml);
-        const result = extractImportResult(parseResponse(response));
-        return result.success
-          ? ok(
-              `Contract created successfully.${result.producedId != null ? ` ID: ${result.producedId}` : ""} ${result.message}`
-            )
-          : err(result.message);
-      } catch (e) {
-        return err((e as Error).message);
-      }
-    }
-  );
-
-  server.tool(
-    "pohoda_delete_contract",
-    "Delete a contract from POHODA by ID. Requires the contract ID.",
-    {
-      id: z.number().describe("Contract ID to delete (required)"),
-    },
-    async (params) => {
-      try {
-        const xml = buildImportDoc({ ico: client.ico }, (item) => {
-          const con = item.ele(NS.con, "con:contract").att("version", "2.0");
-          const actionType = con.ele(NS.con, "con:actionType");
-          const del = actionType.ele(NS.con, "con:delete");
-          const filter = del.ele(NS.ftr, "ftr:filter");
-          filter.ele(NS.ftr, "ftr:id").txt(String(params.id));
-        });
-        const response = await client.sendXml(xml);
-        const result = extractImportResult(parseResponse(response));
-        return result.success ? ok(`Contract deleted successfully. ${result.message}`) : err(result.message);
-      } catch (e) {
-        return err((e as Error).message);
-      }
-    }
-  );
+  registerWriteTool(host, ctx, {
+    name: "pohoda_delete_contract",
+    description: "Delete a contract from POHODA by ID. Disabled unless CONNECTOR_ALLOW_DELETE=true.",
+    kind: "delete",
+    agenda: "contract",
+    schema: { id: z.number().describe("Contract ID to delete (required)") },
+    summary: (p) => `delete contract id ${p.id}`,
+    build: (p, ids, c) =>
+      buildImportDoc({ ico: c.client.ico, note: `delete contract ${p.id}` }, ids, (item) => {
+        const con = item.ele(NS.con, "con:contract").att("version", "2.0");
+        con.ele(NS.con, "con:actionType").ele(NS.con, "con:delete").ele(NS.ftr, "ftr:filter").ele(NS.ftr, "ftr:id").txt(String(p.id));
+      }),
+  });
 }

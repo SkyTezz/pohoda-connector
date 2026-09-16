@@ -1,15 +1,16 @@
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { PohodaClient } from "../client.js";
+import type { ConnectorContext } from "../core/context.js";
+import type { ToolHost } from "../core/registry.js";
+import { registerWriteTool } from "../core/write_tool.js";
 import { buildExportRequest, buildImportDoc } from "../xml/builder.js";
 import { NS } from "../xml/namespaces.js";
-import { parseResponse, extractListData, extractImportResult } from "../xml/parser.js";
-import { ok, err, jsonResult } from "../core/types.js";
+import { parseResponse, extractListData } from "../xml/parser.js";
+import { err, jsonResult } from "../core/types.js";
 import { applyFilter } from "../core/filters.js";
-import { toIsoDate } from "../core/shared.js";
+import { addDate, addText, money } from "../xml/common.js";
 
-export function registerProductionTools(server: McpServer, client: PohodaClient) {
-  server.tool(
+export function registerProductionTools(host: ToolHost, ctx: ConnectorContext): void {
+  host.tool(
     "pohoda_list_vyroba",
     "Export production documents (výroba) from POHODA",
     {
@@ -20,15 +21,8 @@ export function registerProductionTools(server: McpServer, client: PohodaClient)
     },
     async (params) => {
       try {
-        const xml = buildExportRequest(
-          { ico: client.ico },
-          "lst:listVyrobaRequest",
-          NS.lst,
-          "lst:requestVyroba",
-          (req) => applyFilter(req, params),
-        );
-        const resp = parseResponse(await client.sendXml(xml));
-        const data = extractListData(resp);
+        const xml = buildExportRequest({ ico: ctx.client.ico }, "lst:listVyrobaRequest", NS.lst, "lst:requestVyroba", (req) => applyFilter(req, params));
+        const data = extractListData(parseResponse(await ctx.client.sendXml(xml)));
         return jsonResult("Production documents", data, data.length);
       } catch (e) {
         return err((e as Error).message);
@@ -36,56 +30,51 @@ export function registerProductionTools(server: McpServer, client: PohodaClient)
     },
   );
 
-  server.tool(
-    "pohoda_create_vyroba",
-    "Create a production document (výroba) in POHODA",
-    {
+  registerWriteTool(host, ctx, {
+    name: "pohoda_create_vyroba",
+    description: "Create a production document (výroba) in POHODA",
+    kind: "create",
+    agenda: "vyroba",
+    schema: {
       date: z.string().describe("Document date (DD.MM.YYYY or YYYY-MM-DD)"),
-      text: z.string().optional().describe("Description"),
+      text: z.string().max(240).optional().describe("Description"),
       note: z.string().optional(),
-      items: z.array(z.object({
-        text: z.string(),
-        quantity: z.number(),
-        unitPrice: z.number(),
-        unit: z.string().optional(),
-        stockCode: z.string().optional(),
-      })).optional().describe("Production items"),
+      items: z
+        .array(
+          z.object({
+            text: z.string().max(90),
+            quantity: z.number().default(1),
+            unitPrice: z.number(),
+            unit: z.string().max(10).optional(),
+            stockIds: z.string().max(64).optional(),
+          }),
+        )
+        .optional()
+        .describe("Production items"),
     },
-    async (params) => {
-      try {
-        const xml = buildImportDoc({ ico: client.ico }, (item) => {
-          const doc = item.ele(NS.vyr, "vyr:vyroba").att("version", "2.0");
-          const hdr = doc.ele(NS.vyr, "vyr:vyrobaHeader");
-          hdr.ele(NS.vyr, "vyr:date").txt(toIsoDate(params.date));
-          if (params.text) hdr.ele(NS.vyr, "vyr:text").txt(params.text);
-          if (params.note) hdr.ele(NS.vyr, "vyr:note").txt(params.note);
-
-          if (params.items?.length) {
-            const det = doc.ele(NS.vyr, "vyr:vyrobaDetail");
-            for (const i of params.items) {
-              const li = det.ele(NS.vyr, "vyr:vyrobaItem");
-              li.ele(NS.vyr, "vyr:text").txt(i.text);
-              li.ele(NS.vyr, "vyr:quantity").txt(String(i.quantity));
-              if (i.unit) li.ele(NS.vyr, "vyr:unit").txt(i.unit);
-              li.ele(NS.vyr, "vyr:homeCurrency").ele(NS.typ, "typ:unitPrice").txt(String(i.unitPrice));
-              if (i.stockCode) {
-                li.ele(NS.vyr, "vyr:stockItem").ele(NS.typ, "typ:stockItem").ele(NS.typ, "typ:ids").txt(i.stockCode);
-              }
-            }
+    summary: (p) => `vyroba ${p.date} ${p.text ?? ""}`.trim(),
+    build: (p, ids, c) =>
+      buildImportDoc({ ico: c.client.ico, note: `vyroba ${p.date}` }, ids, (item) => {
+        const doc = item.ele(NS.vyr, "vyr:vyroba").att("version", "2.0");
+        const hdr = doc.ele(NS.vyr, "vyr:vyrobaHeader");
+        addDate(hdr, NS.vyr, "vyr:date", p.date);
+        addText(hdr, NS.vyr, "vyr:text", p.text);
+        addText(hdr, NS.vyr, "vyr:note", p.note);
+        if (p.items?.length) {
+          const det = doc.ele(NS.vyr, "vyr:vyrobaDetail");
+          for (const i of p.items) {
+            const li = det.ele(NS.vyr, "vyr:vyrobaItem");
+            li.ele(NS.vyr, "vyr:text").txt(i.text);
+            li.ele(NS.vyr, "vyr:quantity").txt(String(i.quantity));
+            if (i.unit) li.ele(NS.vyr, "vyr:unit").txt(i.unit);
+            li.ele(NS.vyr, "vyr:homeCurrency").ele(NS.typ, "typ:unitPrice").txt(money(i.unitPrice));
+            if (i.stockIds) li.ele(NS.vyr, "vyr:stockItem").ele(NS.typ, "typ:stockItem").ele(NS.typ, "typ:ids").txt(i.stockIds);
           }
-        });
-        const resp = parseResponse(await client.sendXml(xml));
-        const result = extractImportResult(resp);
-        return result.success
-          ? ok(`Production document created. ${result.message}${result.producedId ? ` ID: ${result.producedId}` : ""}`)
-          : err(`Failed: ${result.message}`);
-      } catch (e) {
-        return err((e as Error).message);
-      }
-    },
-  );
+        }
+      }),
+  });
 
-  server.tool(
+  host.tool(
     "pohoda_list_service",
     "Export service records from POHODA",
     {
@@ -96,15 +85,8 @@ export function registerProductionTools(server: McpServer, client: PohodaClient)
     },
     async (params) => {
       try {
-        const xml = buildExportRequest(
-          { ico: client.ico },
-          "lst:listServiceRequest",
-          NS.lst,
-          "lst:requestService",
-          (req) => applyFilter(req, params),
-        );
-        const resp = parseResponse(await client.sendXml(xml));
-        const data = extractListData(resp);
+        const xml = buildExportRequest({ ico: ctx.client.ico }, "lst:listServiceRequest", NS.lst, "lst:requestService", (req) => applyFilter(req, params));
+        const data = extractListData(parseResponse(await ctx.client.sendXml(xml)));
         return jsonResult("Service records", data, data.length);
       } catch (e) {
         return err((e as Error).message);
@@ -112,36 +94,26 @@ export function registerProductionTools(server: McpServer, client: PohodaClient)
     },
   );
 
-  server.tool(
-    "pohoda_create_service",
-    "Create a service record in POHODA",
-    {
+  registerWriteTool(host, ctx, {
+    name: "pohoda_create_service",
+    description: "Create a service record in POHODA",
+    kind: "create",
+    agenda: "service",
+    schema: {
       date: z.string().describe("Service date"),
-      text: z.string().optional().describe("Description"),
-      partnerName: z.string().optional(),
+      text: z.string().max(240).optional().describe("Description"),
+      partnerName: z.string().max(32).optional(),
       note: z.string().optional(),
     },
-    async (params) => {
-      try {
-        const xml = buildImportDoc({ ico: client.ico }, (item) => {
-          const doc = item.ele(NS.ser, "ser:service").att("version", "2.0");
-          const hdr = doc.ele(NS.ser, "ser:serviceHeader");
-          hdr.ele(NS.ser, "ser:date").txt(toIsoDate(params.date));
-          if (params.text) hdr.ele(NS.ser, "ser:text").txt(params.text);
-          if (params.partnerName) {
-            const pi = hdr.ele(NS.ser, "ser:partnerIdentity");
-            pi.ele(NS.typ, "typ:address").ele(NS.typ, "typ:name").txt(params.partnerName);
-          }
-          if (params.note) hdr.ele(NS.ser, "ser:note").txt(params.note);
-        });
-        const resp = parseResponse(await client.sendXml(xml));
-        const result = extractImportResult(resp);
-        return result.success
-          ? ok(`Service record created. ${result.message}${result.producedId ? ` ID: ${result.producedId}` : ""}`)
-          : err(`Failed: ${result.message}`);
-      } catch (e) {
-        return err((e as Error).message);
-      }
-    },
-  );
+    summary: (p) => `service ${p.date} ${p.text ?? ""}`.trim(),
+    build: (p, ids, c) =>
+      buildImportDoc({ ico: c.client.ico, note: `service ${p.date}` }, ids, (item) => {
+        const doc = item.ele(NS.ser, "ser:service").att("version", "2.0");
+        const hdr = doc.ele(NS.ser, "ser:serviceHeader");
+        addDate(hdr, NS.ser, "ser:date", p.date);
+        addText(hdr, NS.ser, "ser:text", p.text);
+        if (p.partnerName) hdr.ele(NS.ser, "ser:partnerIdentity").ele(NS.typ, "typ:address").ele(NS.typ, "typ:name").txt(p.partnerName);
+        addText(hdr, NS.ser, "ser:note", p.note);
+      }),
+  });
 }
