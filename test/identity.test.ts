@@ -19,14 +19,14 @@ describe("identity", () => {
   });
 
   it("validates explicit keys", () => {
-    expect(deriveKey("t", {}, "order-invoice:2026002987:r1")).toBe("order-invoice:2026002987:r1");
+    expect(deriveKey("t", {}, "order-invoice:2026000001:r1")).toBe("order-invoice:2026000001:r1");
     expect(() => deriveKey("t", {}, "bad key with spaces")).toThrow(/idempotencyKey/);
     expect(() => deriveKey("t", {}, "x".repeat(49))).toThrow(/idempotencyKey/);
   });
 
   it("packIds stays within string64", () => {
-    const ids = packIds("AUREA", "order-invoice:2026002987:r1");
-    expect(ids).toEqual({ datapackId: "AUREA-order-invoice:2026002987:r1", itemId: "order-invoice:2026002987:r1", extIds: "order-invoice:2026002987:r1" });
+    const ids = packIds("TEST", "order-invoice:2026000001:r1");
+    expect(ids).toEqual({ datapackId: "TEST-order-invoice:2026000001:r1", itemId: "order-invoice:2026000001:r1", extIds: "order-invoice:2026000001:r1" });
     expect(() => packIds("P".repeat(40), "k".repeat(48))).toThrow(/exceeds 64/);
   });
 });

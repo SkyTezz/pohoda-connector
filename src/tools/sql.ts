@@ -76,19 +76,21 @@ export function registerSqlTools(host: ToolHost, ctx: ConnectorContext): void {
         { column: "Datum", op: "gte" as const, value: toIsoDate(dateFrom) },
         { column: "Datum", op: "lte" as const, value: `${toIsoDate(dateTill)}T23:59:59` },
       ];
-      const result = await runSelect(reader, "Journal", {
-        table: "pUD",
-        columns: ["ID", "Datum", "DatZdPln", "Cislo", "SText", "UMD", "UD", "Kc", "RelUdAg", "RelAgID", "RefAD", "Firma", "ParSym", "DatSave"],
-        where,
-        orderBy: [{ column: "Datum" }, { column: "ID" }],
-        limit,
-      });
-      if (!account || result.isError) return result;
-      // Account prefix filter is applied after fetch: UMD/UD are short strings and a LIKE on both sides would need OR, which buildSelect deliberately does not offer.
-      const text = result.content[0]?.text ?? "";
-      const body = text.slice(text.indexOf("\n\n") + 2);
-      const rows = (JSON.parse(body) as Array<{ UMD?: string; UD?: string }>).filter((r) => String(r.UMD ?? "").startsWith(account) || String(r.UD ?? "").startsWith(account));
-      return jsonResult("Journal", rows, rows.length);
+      try {
+        const { rows, sql } = await reader.select<{ UMD?: string; UD?: string }>({
+          table: "pUD",
+          columns: ["ID", "Datum", "DatZdPln", "Cislo", "SText", "UMD", "UD", "Kc", "RelUdAg", "RelAgID", "RefAD", "Firma", "ParSym", "DatSave"],
+          where,
+          orderBy: [{ column: "Datum" }, { column: "ID" }],
+          limit,
+        });
+        const filtered = account
+          ? rows.filter((r) => String(r.UMD ?? "").startsWith(account) || String(r.UD ?? "").startsWith(account))
+          : rows;
+        return ok(`Journal (${filtered.length} rows)\n\n${JSON.stringify(filtered, null, 2)}\n\n-- ${sql}`);
+      } catch (e) {
+        return err((e as Error).message);
+      }
     },
   );
 

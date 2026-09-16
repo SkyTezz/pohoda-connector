@@ -66,7 +66,7 @@ Reads via SQL (when `POHODA_SQL_*` is set): `pohoda_sql_tables`, `pohoda_sql_des
 (parameterised, dictionary-validated, `TOP` capped), `pohoda_sql_journal` (pUD), `pohoda_sql_payments` (Uhrady),
 `pohoda_sql_extid` (sExtID lookup by your key), `pohoda_sql_agendas`.
 
-Every write tool accepts `idempotencyKey` (1-48 chars `[A-Za-z0-9._:-]`, e.g. `order-invoice:2026002987:r1`) and
+Every write tool accepts `idempotencyKey` (1-48 chars `[A-Za-z0-9._:-]`, e.g. `order-invoice:2026000001:r1`) and
 `reason` (shown to the approver).
 
 ## REST
@@ -139,3 +139,7 @@ Tests use an in-memory SQLite store and a fake mServer; no POHODA needed. XSD el
 - `paymentAccount` (partner's bank account on bank/invoice headers) and Intrastat/MOSS blocks are not exposed.
 
 MIT — see LICENSE.
+
+## Security
+
+Threat model, controls and deployment rules: [SECURITY.md](SECURITY.md). Every control has a test in `test/security.test.ts` / `test/hardening.test.ts`.

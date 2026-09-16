@@ -1,5 +1,5 @@
 import type { ConnectorConfig } from "../src/core/config.js";
-import type { Principal } from "../src/core/principal.js";
+import { TokenTable, type Principal } from "../src/core/principal.js";
 import type { SendOptions } from "../src/client.js";
 import { OutboxService } from "../src/outbox/service.js";
 import { SqliteOutboxStore } from "../src/outbox/sqlite_store.js";
@@ -20,7 +20,14 @@ export function testConfig(overrides: Partial<ConnectorConfig> = {}): ConnectorC
     store: { kind: "sqlite", sqlitePath: ":memory:" },
     sql: undefined,
     transport: "stdio",
-    http: { host: "127.0.0.1", port: 0, tokens: {} },
+    http: {
+      host: "127.0.0.1",
+      port: 0,
+      tokens: new TokenTable(new Map()),
+      allowedHosts: [],
+      maxSessions: 100,
+      sessionIdleMs: 60_000,
+    },
     stdioPrincipal: AGENT,
     ...overrides,
   };

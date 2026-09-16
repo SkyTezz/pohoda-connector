@@ -60,9 +60,11 @@ export function buildSelect(dictionary: Dictionary, q: SelectQuery, maxRows: num
       return `${column} IN (${names.join(", ")})`;
     }
     if (w.value === undefined || Array.isArray(w.value)) throw new Error(`where[${i}]: "${w.op}" needs a scalar value`);
+    const op = OP_SQL[w.op as keyof typeof OP_SQL];
+    if (!op) throw new Error(`where[${i}]: unsupported operator "${w.op}"`);
     const name = `w${i}`;
     params.push({ name, value: w.value });
-    return `${column} ${OP_SQL[w.op]} @${name}`;
+    return `${column} ${op} @${name}`;
   });
   const orderBy = (q.orderBy ?? []).map((o) => `[${dictionary.resolveColumn(table, o.column)}] ${o.direction === "desc" ? "DESC" : "ASC"}`);
   const limit = q.limit == null ? maxRows : Math.min(Math.max(1, Math.trunc(q.limit)), maxRows);

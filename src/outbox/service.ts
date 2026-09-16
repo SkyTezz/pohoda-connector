@@ -3,18 +3,22 @@ import type { ConnectorConfig } from "../core/config.js";
 import { assertCanApprove, assertCanSend, type Principal } from "../core/principal.js";
 import { parseResponse, extractImportResult } from "../xml/parser.js";
 import type { OutboxStore } from "./store.js";
-import type { NewProposal, Proposal, ProposalEvent, ProposalFilter, ProposalState } from "./types.js";
+import type { NewProposal, Proposal, ProposalEvent, ProposalFilter, ProposalPatch, ProposalState } from "./types.js";
 
 export class ProposalStateError extends Error {
   readonly code = "invalid_state";
 }
 
-/** Which transitions a caller may request. Everything else is refused loudly. */
-const ALLOWED: Record<"approve" | "reject" | "send" | "replay", ProposalState[]> = {
+/**
+ * Which states each request may start from. Everything else is refused loudly.
+ * `sending` is replayable: a crash mid-send leaves that state behind and the
+ * duplicity check on the same ids makes a second transmission safe.
+ */
+const ALLOWED: Record<"approve" | "reject" | "send" | "replay", readonly ProposalState[]> = {
   approve: ["proposed"],
   reject: ["proposed", "approved", "failed"],
   send: ["approved", "failed"],
-  replay: ["sent", "refused", "failed"],
+  replay: ["sending", "sent", "refused", "failed"],
 };
 
 /**
@@ -56,23 +60,20 @@ export class OutboxService {
     return this.store.events(id);
   }
 
-  private async require(id: number, action: keyof typeof ALLOWED): Promise<Proposal> {
-    const proposal = await this.store.get(id);
-    if (!proposal) throw new ProposalStateError(`proposal ${id} not found`);
-    if (!ALLOWED[action].includes(proposal.state)) {
-      throw new ProposalStateError(`cannot ${action} proposal ${id} in state "${proposal.state}" (allowed: ${ALLOWED[action].join(", ")})`);
+  private async move(id: number, action: keyof typeof ALLOWED, toState: ProposalState, patch: ProposalPatch, principal: Principal, note?: string): Promise<Proposal> {
+    const current = await this.store.get(id);
+    if (!current) throw new ProposalStateError(`proposal ${id} not found`);
+    if (!ALLOWED[action].includes(current.state)) {
+      throw new ProposalStateError(`cannot ${action} proposal ${id} in state "${current.state}" (allowed: ${ALLOWED[action].join(", ")})`);
     }
-    return proposal;
+    const moved = await this.store.transition(id, ALLOWED[action], { ...patch, state: toState }, { fromState: current.state, toState, actor: principal.name, note });
+    if (!moved) throw new ProposalStateError(`proposal ${id} was changed concurrently; reload and retry`);
+    return moved;
   }
 
   async approve(id: number, principal: Principal, note?: string): Promise<Proposal> {
     assertCanApprove(principal, this.config);
-    const proposal = await this.require(id, "approve");
-    const approved = await this.store.update(
-      id,
-      { state: "approved", approvedBy: principal.name, approvedAt: new Date().toISOString(), decisionNote: note },
-      { fromState: proposal.state, toState: "approved", actor: principal.name, note },
-    );
+    const approved = await this.move(id, "approve", "approved", { approvedBy: principal.name, approvedAt: new Date().toISOString(), decisionNote: note }, principal, note);
     if (!this.config.autoSendOnApprove) return approved;
     return (await this.send(id, principal)).proposal;
   }
@@ -80,38 +81,34 @@ export class OutboxService {
   async reject(id: number, principal: Principal, reason: string): Promise<Proposal> {
     assertCanApprove(principal, this.config);
     if (!reason.trim()) throw new Error("a rejection needs a reason");
-    const proposal = await this.require(id, "reject");
-    return this.store.update(
-      id,
-      { state: "rejected", approvedBy: principal.name, approvedAt: new Date().toISOString(), decisionNote: reason },
-      { fromState: proposal.state, toState: "rejected", actor: principal.name, note: reason },
-    );
+    return this.move(id, "reject", "rejected", { approvedBy: principal.name, approvedAt: new Date().toISOString(), decisionNote: reason }, principal, reason);
   }
 
   async send(id: number, principal: Principal): Promise<SendOutcome> {
     assertCanSend(principal, this.config);
-    const proposal = await this.require(id, "send");
-    return this.transmit(proposal, principal);
+    return this.transmit(id, "send", principal);
   }
 
   /** Replay re-sends the stored XML with the same ids; POHODA's duplicity check makes this safe. */
   async replay(id: number, principal: Principal): Promise<SendOutcome> {
     assertCanSend(principal, this.config);
-    const proposal = await this.require(id, "replay");
-    return this.transmit(proposal, principal);
+    return this.transmit(id, "replay", principal);
   }
 
-  private async transmit(proposal: Proposal, principal: Principal): Promise<SendOutcome> {
-    const attempts = proposal.attempts + 1;
-    await this.store.update(proposal.id, { state: "sending", attempts }, { fromState: proposal.state, toState: "sending", actor: principal.name, note: `attempt ${attempts}` });
+  private async transmit(id: number, action: "send" | "replay", principal: Principal): Promise<SendOutcome> {
+    const before = await this.store.get(id);
+    if (!before) throw new ProposalStateError(`proposal ${id} not found`);
+    const attempts = before.attempts + 1;
+    // Claiming the `sending` state atomically is the lock: a concurrent sender loses here, not at mServer.
+    const claimed = await this.move(id, action, "sending", { attempts }, principal, `attempt ${attempts}`);
 
     let responseXml: string;
     try {
-      responseXml = await this.client.sendXml(proposal.xml, { checkDuplicity: true, instance: proposal.datapackId });
+      responseXml = await this.client.sendXml(claimed.xml, { checkDuplicity: true, instance: claimed.datapackId });
     } catch (e) {
       const error = (e as Error).message;
-      const failed = await this.store.update(proposal.id, { state: "failed", error }, { fromState: "sending", toState: "failed", actor: principal.name, note: error });
-      return { proposal: failed, duplicate: false };
+      const failed = await this.store.transition(id, ["sending"], { state: "failed", error }, { fromState: "sending", toState: "failed", actor: principal.name, note: error });
+      return { proposal: failed ?? claimed, duplicate: false };
     }
 
     const parsed = parseResponse(responseXml);
@@ -121,8 +118,9 @@ export class OutboxService {
     const duplicate = !result.success && DUPLICATE_PATTERN.test(`${note} ${JSON.stringify(item?.data ?? "")}`);
 
     if (result.success || duplicate) {
-      const sent = await this.store.update(
-        proposal.id,
+      const sent = await this.store.transition(
+        id,
+        ["sending"],
         {
           state: "sent",
           sentAt: new Date().toISOString(),
@@ -135,14 +133,15 @@ export class OutboxService {
         },
         { fromState: "sending", toState: "sent", actor: principal.name, note: duplicate ? "duplicate" : note },
       );
-      return { proposal: sent, duplicate };
+      return { proposal: sent ?? claimed, duplicate };
     }
 
-    const refused = await this.store.update(
-      proposal.id,
+    const refused = await this.store.transition(
+      id,
+      ["sending"],
       { state: "refused", responseState: item?.state ?? parsed.state, responseNote: note, responseXml, error: note },
       { fromState: "sending", toState: "refused", actor: principal.name, note },
     );
-    return { proposal: refused, duplicate: false };
+    return { proposal: refused ?? claimed, duplicate: false };
   }
 }

@@ -1,4 +1,4 @@
-import type { NewProposal, Proposal, ProposalEvent, ProposalFilter, ProposalPatch, TransitionEvent } from "./types.js";
+import type { NewProposal, Proposal, ProposalEvent, ProposalFilter, ProposalPatch, ProposalState, TransitionEvent } from "./types.js";
 
 /**
  * Durable storage for proposals. Two implementations: SQLite (single file,
@@ -11,7 +11,13 @@ export interface OutboxStore {
   insert(proposal: NewProposal): Promise<Proposal>;
   get(id: number): Promise<Proposal | undefined>;
   list(filter: ProposalFilter): Promise<Proposal[]>;
-  update(id: number, patch: ProposalPatch, event: TransitionEvent): Promise<Proposal>;
+  /**
+   * Atomic state transition: applies `patch` + records `event` only if the row
+   * is currently in one of `fromStates` (UPDATE … WHERE state IN …). Returns
+   * undefined when another caller moved the row first, so two operators
+   * approving at once can never both send.
+   */
+  transition(id: number, fromStates: readonly ProposalState[], patch: ProposalPatch, event: TransitionEvent): Promise<Proposal | undefined>;
   events(id: number): Promise<ProposalEvent[]>;
   close(): Promise<void>;
 }

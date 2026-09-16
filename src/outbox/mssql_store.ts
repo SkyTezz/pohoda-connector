@@ -1,7 +1,7 @@
 import sql from "mssql";
 import type { MssqlConnection } from "../core/config.js";
 import { clampLimit, nowIso, patchColumns, rowToProposal, type OutboxStore, type ProposalRow } from "./store.js";
-import type { NewProposal, Proposal, ProposalEvent, ProposalFilter, ProposalPatch, TransitionEvent } from "./types.js";
+import type { NewProposal, Proposal, ProposalEvent, ProposalFilter, ProposalPatch, ProposalState, TransitionEvent } from "./types.js";
 
 const SCHEMA = `
 IF OBJECT_ID('dbo.proposals', 'U') IS NULL
@@ -136,27 +136,41 @@ export class MssqlOutboxStore implements OutboxStore {
     return res.recordset.map(rowToProposal);
   }
 
-  async update(id: number, patch: ProposalPatch, event: TransitionEvent): Promise<Proposal> {
+  async transition(id: number, fromStates: readonly ProposalState[], patch: ProposalPatch, event: TransitionEvent): Promise<Proposal | undefined> {
+    if (!this.pool) throw new Error("MssqlOutboxStore.init() was not called");
     const columns = patchColumns(patch);
-    if (columns.length > 0) {
-      const req = this.request().input("id", sql.Int, id);
+    if (columns.length === 0) throw new Error("transition needs a non-empty patch");
+    const tx = new sql.Transaction(this.pool);
+    await tx.begin(sql.ISOLATION_LEVEL.SERIALIZABLE);
+    try {
+      const req = new sql.Request(tx).input("id", sql.Int, id);
       const sets = columns.map(([c, v], i) => {
         req.input(`p${i}`, typeof v === "number" ? sql.Int : sql.NVarChar(sql.MAX), v as number | string | null);
         return `${c} = @p${i}`;
       });
-      await req.query(`UPDATE dbo.proposals SET ${sets.join(", ")} WHERE id = @id`);
+      const states = fromStates.map((s, i) => {
+        req.input(`s${i}`, sql.NVarChar(16), s);
+        return `@s${i}`;
+      });
+      const updated = await req.query(`UPDATE dbo.proposals SET ${sets.join(", ")} WHERE id = @id AND state IN (${states.join(", ")})`);
+      if ((updated.rowsAffected[0] ?? 0) === 0) {
+        await tx.rollback();
+        return undefined;
+      }
+      await new sql.Request(tx)
+        .input("proposal_id", sql.Int, id)
+        .input("from_state", sql.NVarChar(16), event.fromState)
+        .input("to_state", sql.NVarChar(16), event.toState)
+        .input("actor", sql.NVarChar(120), event.actor)
+        .input("at", sql.NVarChar(40), nowIso())
+        .input("note", sql.NVarChar(sql.MAX), event.note ?? null)
+        .query("INSERT INTO dbo.proposal_events (proposal_id, from_state, to_state, actor, at, note) VALUES (@proposal_id, @from_state, @to_state, @actor, @at, @note)");
+      await tx.commit();
+    } catch (e) {
+      await tx.rollback();
+      throw e;
     }
-    await this.request()
-      .input("proposal_id", sql.Int, id)
-      .input("from_state", sql.NVarChar(16), event.fromState)
-      .input("to_state", sql.NVarChar(16), event.toState)
-      .input("actor", sql.NVarChar(120), event.actor)
-      .input("at", sql.NVarChar(40), nowIso())
-      .input("note", sql.NVarChar(sql.MAX), event.note ?? null)
-      .query("INSERT INTO dbo.proposal_events (proposal_id, from_state, to_state, actor, at, note) VALUES (@proposal_id, @from_state, @to_state, @actor, @at, @note)");
-    const updated = await this.get(id);
-    if (!updated) throw new Error(`proposal ${id} vanished during update`);
-    return updated;
+    return this.get(id);
   }
 
   async events(id: number): Promise<ProposalEvent[]> {

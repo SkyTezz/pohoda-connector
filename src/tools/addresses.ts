@@ -71,6 +71,11 @@ const targetSchema = z
   })
   .refine((t) => t.id != null || t.extId != null || t.ico != null, { message: "give id, extId or ico" });
 
+function withoutTarget<T extends { target: unknown }>(params: T): Omit<T, "target"> {
+  const { target: _target, ...rest } = params;
+  return rest;
+}
+
 function addTargetFilter(actionEl: XMLBuilder, target: z.infer<typeof targetSchema>, exSystem: string): void {
   const filter = actionEl.ele(NS.ftr, "ftr:filter");
   if (target.id != null) filter.ele(NS.ftr, "ftr:id").txt(String(target.id));
@@ -129,9 +134,7 @@ export function registerAddressTools(host: ToolHost, ctx: ConnectorContext): voi
       buildImportDoc({ ico: c.client.ico, note: "update address" }, ids, (item) => {
         const adb = item.ele(NS.adb, "adb:addressbook").att("version", "2.0");
         addTargetFilter(adb.ele(NS.adb, "adb:actionType").ele(NS.adb, "adb:update"), p.target, c.config.extSystem);
-        const { target, ...fields } = p;
-        void target;
-        buildAddressHeader(adb, fields, undefined, c.config.extSystem);
+        buildAddressHeader(adb, withoutTarget(p), undefined, c.config.extSystem);
       }),
   });
 

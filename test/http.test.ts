@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { TokenTable } from "../src/core/principal.js";
 import { startHttpServer } from "../src/http/server.js";
 import { harness, okResponse } from "./helpers.js";
 
@@ -13,7 +14,19 @@ describe("HTTP REST facade", () => {
   beforeAll(async () => {
     h = await harness({
       transport: "http",
-      http: { host: "127.0.0.1", port: 0, tokens: { [AGENT_TOKEN]: { name: "agent", role: "agent" }, [HUMAN_TOKEN]: { name: "operator", role: "human" } } },
+      http: {
+        host: "127.0.0.1",
+        port: 0,
+        tokens: new TokenTable(
+          new Map([
+            [AGENT_TOKEN, { name: "agent", role: "agent" }],
+            [HUMAN_TOKEN, { name: "operator", role: "human" }],
+          ]),
+        ),
+        allowedHosts: [],
+        maxSessions: 100,
+        sessionIdleMs: 60_000,
+      },
     });
     const started = await startHttpServer(h.deps);
     base = `http://127.0.0.1:${started.port}`;

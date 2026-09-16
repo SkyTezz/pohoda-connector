@@ -15,16 +15,16 @@ describe("document XML", () => {
       bankType: "receipt",
       account: { ids: "KB" },
       dateStatement: "16.09.2026",
-      symVar: "2026002987",
-      text: "Platba 2026002987",
-      liquidations: [{ sourceAgenda: "issuedInvoice", sourceDocument: { number: "2026002987" }, amount: 1290 }],
+      symVar: "2026000001",
+      text: "Platba 2026000001",
+      liquidations: [{ sourceAgenda: "issuedInvoice", sourceDocument: { number: "2026000001" }, amount: 1290 }],
       idempotencyKey: "bank:18342",
     });
     expect(xml).toContain("<bnk:bankType>receipt</bnk:bankType>");
     expect(xml).toContain("<bnk:account><typ:ids>KB</typ:ids></bnk:account>");
     expect(xml).toContain("<bnk:dateStatement>2026-09-16</bnk:dateStatement>");
     expect(xml).toContain(
-      "<bnk:bankLiquidationItem><bnk:settingsLiquidation><bnk:sourceAgenda>issuedInvoice</bnk:sourceAgenda><bnk:sourceDocument><typ:number>2026002987</typ:number></bnk:sourceDocument><bnk:liquidationPrice>1290</bnk:liquidationPrice></bnk:settingsLiquidation><bnk:liquidationItem><bnk:quantity>1</bnk:quantity><bnk:payVAT>false</bnk:payVAT><bnk:rateVAT>none</bnk:rateVAT><bnk:homeCurrency><typ:unitPrice>1290</typ:unitPrice></bnk:homeCurrency></bnk:liquidationItem></bnk:bankLiquidationItem>",
+      "<bnk:bankLiquidationItem><bnk:settingsLiquidation><bnk:sourceAgenda>issuedInvoice</bnk:sourceAgenda><bnk:sourceDocument><typ:number>2026000001</typ:number></bnk:sourceDocument><bnk:liquidationPrice>1290</bnk:liquidationPrice></bnk:settingsLiquidation><bnk:liquidationItem><bnk:quantity>1</bnk:quantity><bnk:payVAT>false</bnk:payVAT><bnk:rateVAT>none</bnk:rateVAT><bnk:homeCurrency><typ:unitPrice>1290</typ:unitPrice></bnk:homeCurrency></bnk:liquidationItem></bnk:bankLiquidationItem>",
     );
   });
 
@@ -38,13 +38,13 @@ describe("document XML", () => {
         { text: "Zlatá mince §92", unitPrice: 25000, payVAT: true, rateVAT: "none", classificationVAT: { ids: "UKosv" } },
         { text: "Kapsle", unitPrice: 12.1, payVAT: true, rateVAT: "high", classificationVAT: { ids: "UD" } },
       ],
-      liquidations: [{ sourceAgenda: "issuedInvoice", sourceDocument: { extId: "order-invoice:2026002987:r1" }, amount: 100 }],
+      liquidations: [{ sourceAgenda: "issuedInvoice", sourceDocument: { extId: "order-invoice:2026000001:r1" }, amount: 100 }],
       idempotencyKey: "pos:UCT-2026-0001",
     });
     expect(xml).toContain("<vch:cashAccount><typ:ids>POKL1</typ:ids></vch:cashAccount>");
     expect(xml).toContain("<vch:classificationVAT><typ:ids>UKosv</typ:ids></vch:classificationVAT>");
     expect(xml).toContain("<typ:unitPrice>12.10</typ:unitPrice>");
-    expect(xml).toContain("<vch:sourceDocument><typ:extId><typ:ids>order-invoice:2026002987:r1</typ:ids><typ:exSystemName>TEST</typ:exSystemName></typ:extId></vch:sourceDocument>");
+    expect(xml).toContain("<vch:sourceDocument><typ:extId><typ:ids>order-invoice:2026000001:r1</typ:ids><typ:exSystemName>TEST</typ:exSystemName></typ:extId></vch:sourceDocument>");
     expect(xml).toContain("<vch:liquidationItem><vch:quantity>1</vch:quantity><vch:payVAT>false</vch:payVAT><vch:rateVAT>none</vch:rateVAT></vch:liquidationItem>");
   });
 
@@ -81,14 +81,14 @@ describe("document XML", () => {
   });
 
   it("storno and corrective documents reference the source document", async () => {
-    const storno = await proposedXml("pohoda_cancel_invoice", { sourceDocument: { number: "2026002987" }, idempotencyKey: "storno:2026002987" });
-    expect(storno).toContain("<inv:cancelDocument><typ:sourceDocument><typ:number>2026002987</typ:number></typ:sourceDocument></inv:cancelDocument>");
+    const storno = await proposedXml("pohoda_cancel_invoice", { sourceDocument: { number: "2026000001" }, idempotencyKey: "storno:2026000001" });
+    expect(storno).toContain("<inv:cancelDocument><typ:sourceDocument><typ:number>2026000001</typ:number></typ:sourceDocument></inv:cancelDocument>");
     const corrective = await proposedXml("pohoda_create_corrective_invoice", {
-      sourceDocument: { extId: "order-invoice:2026002987:r1" },
+      sourceDocument: { extId: "order-invoice:2026000001:r1" },
       date: "2026-09-20",
       text: "Opravný daňový doklad",
       items: [{ text: "Vrácení", quantity: -1, unitPrice: 1290, payVAT: true, rateVAT: "none" }],
-      idempotencyKey: "credit:2026002987:1",
+      idempotencyKey: "credit:2026000001:1",
     });
     expect(corrective).toContain("<inv:correctiveDocument><typ:sourceDocument><typ:extId>");
     expect(corrective).toContain("<inv:invoiceType>issuedCorrectiveTax</inv:invoiceType>");

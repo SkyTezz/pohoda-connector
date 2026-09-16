@@ -1,8 +1,12 @@
 import { DatabaseSync } from "node:sqlite";
-import { mkdirSync } from "node:fs";
+import { chmodSync, mkdirSync } from "node:fs";
 import path from "node:path";
 import { clampLimit, nowIso, patchColumns, rowToProposal, type OutboxStore, type ProposalRow } from "./store.js";
-import type { NewProposal, Proposal, ProposalEvent, ProposalFilter, ProposalPatch, TransitionEvent } from "./types.js";
+import type { NewProposal, Proposal, ProposalEvent, ProposalFilter, ProposalPatch, ProposalState, TransitionEvent } from "./types.js";
+
+/** Proposals carry customer data (names, amounts); the file is owner-only. No-op on Windows ACLs. */
+const OWNER_ONLY = 0o600;
+const IN_MEMORY = ":memory:";
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS proposals (
@@ -53,10 +57,12 @@ export class SqliteOutboxStore implements OutboxStore {
   constructor(private readonly filePath: string) {}
 
   async init(): Promise<void> {
-    if (this.filePath !== ":memory:") mkdirSync(path.dirname(this.filePath), { recursive: true });
+    const onDisk = this.filePath !== IN_MEMORY;
+    if (onDisk) mkdirSync(path.dirname(this.filePath), { recursive: true, mode: 0o700 });
     this.db = new DatabaseSync(this.filePath);
     this.db.exec("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;");
     this.db.exec(SCHEMA);
+    if (onDisk) chmodSync(this.filePath, OWNER_ONLY);
   }
 
   private conn(): DatabaseSync {
@@ -111,24 +117,36 @@ export class SqliteOutboxStore implements OutboxStore {
     return rows.map(rowToProposal);
   }
 
-  async update(id: number, patch: ProposalPatch, event: TransitionEvent): Promise<Proposal> {
+  async transition(id: number, fromStates: readonly ProposalState[], patch: ProposalPatch, event: TransitionEvent): Promise<Proposal | undefined> {
     const db = this.conn();
     const columns = patchColumns(patch);
-    if (columns.length > 0) {
-      const sets = columns.map(([c]) => `${c} = ?`).join(", ");
-      db.prepare(`UPDATE proposals SET ${sets} WHERE id = ?`).run(...(columns.map(([, v]) => v) as Array<string | number | null>), id);
+    if (columns.length === 0) throw new Error("transition needs a non-empty patch");
+    const sets = columns.map(([c]) => `${c} = ?`).join(", ");
+    const placeholders = fromStates.map(() => "?").join(", ");
+    // BEGIN IMMEDIATE takes the write lock up front so the UPDATE + event insert are one unit.
+    db.exec("BEGIN IMMEDIATE");
+    try {
+      const result = db
+        .prepare(`UPDATE proposals SET ${sets} WHERE id = ? AND state IN (${placeholders})`)
+        .run(...(columns.map(([, v]) => v) as Array<string | number | null>), id, ...fromStates);
+      if (Number(result.changes) === 0) {
+        db.exec("ROLLBACK");
+        return undefined;
+      }
+      db.prepare("INSERT INTO proposal_events (proposal_id, from_state, to_state, actor, at, note) VALUES (?, ?, ?, ?, ?, ?)").run(
+        id,
+        event.fromState,
+        event.toState,
+        event.actor,
+        nowIso(),
+        event.note ?? null,
+      );
+      db.exec("COMMIT");
+    } catch (e) {
+      db.exec("ROLLBACK");
+      throw e;
     }
-    db.prepare("INSERT INTO proposal_events (proposal_id, from_state, to_state, actor, at, note) VALUES (?, ?, ?, ?, ?, ?)").run(
-      id,
-      event.fromState,
-      event.toState,
-      event.actor,
-      nowIso(),
-      event.note ?? null,
-    );
-    const updated = await this.get(id);
-    if (!updated) throw new Error(`proposal ${id} vanished during update`);
-    return updated;
+    return this.get(id);
   }
 
   async events(id: number): Promise<ProposalEvent[]> {

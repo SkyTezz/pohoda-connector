@@ -1,4 +1,4 @@
-import type { Principal, Role } from "./principal.js";
+import { ROLES, TokenTable, type Principal, type Role } from "./principal.js";
 
 /**
  * Runtime configuration, read once from the environment.
@@ -21,6 +21,16 @@ export interface MssqlConnection {
   trustServerCertificate: boolean;
 }
 
+export interface HttpConfig {
+  host: string;
+  port: number;
+  tokens: TokenTable;
+  /** Host-header allow-list (DNS-rebinding protection). Empty = not enforced. */
+  allowedHosts: string[];
+  maxSessions: number;
+  sessionIdleMs: number;
+}
+
 export interface ConnectorConfig {
   pohoda: {
     url: string;
@@ -30,7 +40,7 @@ export interface ConnectorConfig {
     timeout: number;
     maxRetries: number;
   };
-  /** `approval` = every write becomes a proposal a human approves; `direct` = legacy pass-through. */
+  /** `approval` = every write becomes a proposal a human approves; `direct` = pass-through, sandbox only. */
   writeMode: WriteMode;
   /** POHODA documents are cancelled with storno/corrective documents, never deleted. Off by default. */
   allowDelete: boolean;
@@ -44,12 +54,30 @@ export interface ConnectorConfig {
   /** Read-only SQL access to the accounting unit database (StwPh_<ICO>_<year>). */
   sql?: MssqlConnection & { maxRows: number };
   transport: Transport;
-  http: { host: string; port: number; tokens: Record<string, Principal> };
+  http: HttpConfig;
   /** Principal used on stdio, where there is no bearer token. */
   stdioPrincipal: Principal;
 }
 
-const ROLES: Role[] = ["agent", "human", "service"];
+export const DEFAULTS = {
+  pohodaTimeoutMs: 120_000,
+  pohodaMaxRetries: 2,
+  extSystem: "CONNECTOR",
+  sqlitePath: "./data/connector.sqlite",
+  mssqlPort: 1433,
+  sqlMaxRows: 1000,
+  httpHost: "127.0.0.1",
+  httpPort: 8444,
+  httpMaxSessions: 50,
+  httpSessionIdleMinutes: 30,
+  stdioPrincipalName: "stdio",
+  stdioPrincipalRole: "agent" as Role,
+} as const;
+
+/** 32 characters of a random token ≈ 190 bits of entropy from a base64/hex generator — enough to rule out guessing. */
+export const MIN_TOKEN_LENGTH = 32;
+const MS_PER_MINUTE = 60_000;
+const LOOPBACK_HOSTS = ["127.0.0.1", "::1", "localhost"];
 
 function required(env: NodeJS.ProcessEnv, name: string): string {
   const value = env[name];
@@ -80,12 +108,19 @@ function oneOf<T extends string>(env: NodeJS.ProcessEnv, name: string, allowed: 
   return raw as T;
 }
 
+function list(env: NodeJS.ProcessEnv, name: string): string[] {
+  return (env[name] ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+}
+
 function mssqlFromEnv(env: NodeJS.ProcessEnv, prefix: string): MssqlConnection | undefined {
   const server = env[`${prefix}_SERVER`];
   if (!server) return undefined;
   return {
     server,
-    port: int(env, `${prefix}_PORT`, 1433),
+    port: int(env, `${prefix}_PORT`, DEFAULTS.mssqlPort),
     database: required(env, `${prefix}_DATABASE`),
     user: required(env, `${prefix}_USER`),
     password: required(env, `${prefix}_PASSWORD`),
@@ -94,8 +129,11 @@ function mssqlFromEnv(env: NodeJS.ProcessEnv, prefix: string): MssqlConnection |
   };
 }
 
-function parseTokens(raw: string | undefined): Record<string, Principal> {
-  if (!raw) return {};
+const FORBIDDEN_TOKEN_KEYS = new Set(["__proto__", "constructor", "prototype"]);
+
+/** Parse CONNECTOR_TOKENS into a Map first — never index a JSON object by attacker-controlled keys. */
+export function parseTokens(raw: string | undefined): TokenTable {
+  if (!raw) return new TokenTable(new Map());
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
@@ -105,16 +143,17 @@ function parseTokens(raw: string | undefined): Record<string, Principal> {
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
     throw new Error('CONNECTOR_TOKENS must be an object: {"<token>": {"name": "...", "role": "agent|human|service"}}');
   }
-  const tokens: Record<string, Principal> = {};
+  const map = new Map<string, Principal>();
   for (const [token, def] of Object.entries(parsed as Record<string, unknown>)) {
-    const d = def as Partial<Principal>;
-    if (!d || typeof d.name !== "string" || !ROLES.includes(d.role as Role)) {
-      throw new Error(`CONNECTOR_TOKENS entry for a token is invalid; need {name, role}`);
+    if (FORBIDDEN_TOKEN_KEYS.has(token)) throw new Error(`CONNECTOR_TOKENS: "${token}" is not an acceptable token`);
+    if (token.length < MIN_TOKEN_LENGTH) throw new Error(`CONNECTOR_TOKENS: every token must be at least ${MIN_TOKEN_LENGTH} characters`);
+    const d = def as Partial<Principal> | null;
+    if (!d || typeof d !== "object" || typeof d.name !== "string" || d.name.trim() === "" || !ROLES.includes(d.role as Role)) {
+      throw new Error("CONNECTOR_TOKENS: every entry needs {name: non-empty string, role: agent|human|service}");
     }
-    if (token.length < 24) throw new Error("CONNECTOR_TOKENS: every token must be at least 24 characters");
-    tokens[token] = { name: d.name, role: d.role as Role };
+    map.set(token, { name: d.name, role: d.role as Role });
   }
-  return tokens;
+  return new TokenTable(map);
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): ConnectorConfig {
@@ -126,8 +165,18 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ConnectorConfi
   }
   const sql = mssqlFromEnv(env, "POHODA_SQL");
   const tokens = parseTokens(env.CONNECTOR_TOKENS);
-  if (transport === "http" && Object.keys(tokens).length === 0) {
+  if (transport === "http" && tokens.size === 0) {
     throw new Error("CONNECTOR_TRANSPORT=http requires CONNECTOR_TOKENS (no anonymous HTTP access)");
+  }
+  const writeMode = oneOf(env, "CONNECTOR_WRITE_MODE", ["approval", "direct"] as const, "approval");
+  const sandbox = bool(env, "CONNECTOR_SANDBOX", false);
+  if (writeMode === "direct" && !sandbox) {
+    throw new Error("CONNECTOR_WRITE_MODE=direct bypasses human approval and is allowed only with CONNECTOR_SANDBOX=true");
+  }
+  const httpHost = env.CONNECTOR_HTTP_HOST || DEFAULTS.httpHost;
+  const allowedHosts = list(env, "CONNECTOR_HTTP_ALLOWED_HOSTS");
+  if (transport === "http" && !LOOPBACK_HOSTS.includes(httpHost) && allowedHosts.length === 0) {
+    throw new Error("CONNECTOR_HTTP_HOST is not loopback: set CONNECTOR_HTTP_ALLOWED_HOSTS (comma-separated Host header values)");
   }
 
   return {
@@ -136,21 +185,28 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ConnectorConfi
       username: required(env, "POHODA_USERNAME"),
       password: required(env, "POHODA_PASSWORD"),
       ico: required(env, "POHODA_ICO"),
-      timeout: int(env, "POHODA_TIMEOUT", 120_000),
-      maxRetries: int(env, "POHODA_MAX_RETRIES", 2),
+      timeout: int(env, "POHODA_TIMEOUT", DEFAULTS.pohodaTimeoutMs),
+      maxRetries: int(env, "POHODA_MAX_RETRIES", DEFAULTS.pohodaMaxRetries),
     },
-    writeMode: oneOf(env, "CONNECTOR_WRITE_MODE", ["approval", "direct"] as const, "approval"),
+    writeMode,
     allowDelete: bool(env, "CONNECTOR_ALLOW_DELETE", false),
     autoSendOnApprove: bool(env, "CONNECTOR_AUTO_SEND_ON_APPROVE", true),
-    sandbox: bool(env, "CONNECTOR_SANDBOX", false),
-    extSystem: env.CONNECTOR_EXT_SYSTEM || "CONNECTOR",
-    store: { kind: storeKind, sqlitePath: env.CONNECTOR_SQLITE_PATH || "./data/connector.sqlite", mssql: storeMssql },
-    sql: sql ? { ...sql, maxRows: int(env, "POHODA_SQL_MAX_ROWS", 1000) } : undefined,
+    sandbox,
+    extSystem: env.CONNECTOR_EXT_SYSTEM || DEFAULTS.extSystem,
+    store: { kind: storeKind, sqlitePath: env.CONNECTOR_SQLITE_PATH || DEFAULTS.sqlitePath, mssql: storeMssql },
+    sql: sql ? { ...sql, maxRows: int(env, "POHODA_SQL_MAX_ROWS", DEFAULTS.sqlMaxRows) } : undefined,
     transport,
-    http: { host: env.CONNECTOR_HTTP_HOST || "127.0.0.1", port: int(env, "CONNECTOR_HTTP_PORT", 8444), tokens },
+    http: {
+      host: httpHost,
+      port: int(env, "CONNECTOR_HTTP_PORT", DEFAULTS.httpPort),
+      tokens,
+      allowedHosts,
+      maxSessions: int(env, "CONNECTOR_HTTP_MAX_SESSIONS", DEFAULTS.httpMaxSessions),
+      sessionIdleMs: int(env, "CONNECTOR_HTTP_SESSION_IDLE_MINUTES", DEFAULTS.httpSessionIdleMinutes) * MS_PER_MINUTE,
+    },
     stdioPrincipal: {
-      name: env.CONNECTOR_PRINCIPAL_NAME || "stdio",
-      role: oneOf(env, "CONNECTOR_PRINCIPAL_ROLE", ROLES, "agent"),
+      name: env.CONNECTOR_PRINCIPAL_NAME || DEFAULTS.stdioPrincipalName,
+      role: oneOf(env, "CONNECTOR_PRINCIPAL_ROLE", ROLES, DEFAULTS.stdioPrincipalRole),
     },
   };
 }

@@ -4,6 +4,10 @@ import type { ConnectorContext } from "../core/context.js";
 import type { ToolHost } from "../core/registry.js";
 import { ok, err } from "../core/types.js";
 
+/** Files above this size are reported by size only; base64 inline would bloat the tool result. */
+const INLINE_FILE_LIMIT_BYTES = 100 * 1024;
+const BYTES_PER_KB = 1024;
+
 function parseStatusXml(xml: string): { server?: string; status?: string; processing?: string; message?: string } {
   const parser = new XMLParser({ ignoreAttributes: false, removeNSPrefix: true });
   const doc = parser.parse(xml);
@@ -104,11 +108,11 @@ export function registerSystemTools(host: ToolHost, ctx: ConnectorContext): void
       try {
         const buf = await ctx.client.downloadFile(filePath);
         const size = buf.length;
-        const sizeKb = size / 1024;
-        if (size < 100 * 1024) {
+        const sizeKb = size / BYTES_PER_KB;
+        if (size < INLINE_FILE_LIMIT_BYTES) {
           return ok(`File size: ${size} bytes (${sizeKb.toFixed(1)} KB)\n\nBase64 content:\n${buf.toString("base64")}`);
         }
-        return ok(`File size: ${size} bytes (${sizeKb.toFixed(1)} KB). File too large for inline transfer; use external download for files over 100 KB.`);
+        return ok(`File size: ${size} bytes (${sizeKb.toFixed(1)} KB). File too large for inline transfer (limit ${INLINE_FILE_LIMIT_BYTES / BYTES_PER_KB} KB).`);
       } catch (e) {
         return err((e as Error).message);
       }

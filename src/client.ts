@@ -1,6 +1,6 @@
 import { gunzipSync, inflateSync, inflateRawSync } from "node:zlib";
 import * as path from "node:path";
-import iconv from "iconv-lite";
+import { decodeFromPohoda, encodeForPohoda } from "./xml/encoding.js";
 import { POHODA_APP_NAME } from "./xml/namespaces.js";
 
 export interface PohodaClientConfig {
@@ -21,6 +21,16 @@ export interface SendOptions {
   instance?: string;
 }
 
+const HTTP = { UNAUTHORIZED: 401, FORBIDDEN: 403, NOT_FOUND: 404, REQUEST_TIMEOUT: 408, SERVICE_UNAVAILABLE: 503 } as const;
+const DEFAULT_TIMEOUT_MS = 120_000;
+const DEFAULT_MAX_RETRIES = 2;
+const STATUS_TIMEOUT_MS = 10_000;
+const DOWNLOAD_TIMEOUT_MS = 30_000;
+const RETRY_BACKOFF_TIMEOUT_MS = 2_000;
+const RETRY_BACKOFF_BUSY_MS = 3_000;
+const MS_PER_SECOND = 1_000;
+const CONTENT_TYPE_XML = "text/xml";
+
 /** Thin HTTP client for POHODA mServer: Windows-1250 both ways, Basic auth, serial processing on the server side. */
 export class PohodaClient {
   private readonly baseUrl: string;
@@ -33,16 +43,14 @@ export class PohodaClient {
   constructor(config: PohodaClientConfig) {
     this.baseUrl = config.url.replace(/\/+$/, "");
     this.ico = config.ico;
-    this.timeout = config.timeout ?? 120_000;
-    this.maxRetries = config.maxRetries ?? 2;
+    this.timeout = config.timeout ?? DEFAULT_TIMEOUT_MS;
+    this.maxRetries = config.maxRetries ?? DEFAULT_MAX_RETRIES;
     this.checkDuplicity = config.checkDuplicity ?? false;
-
-    const creds = `${config.username}:${config.password}`;
-    this.authHeader = `Basic ${Buffer.from(creds, "utf-8").toString("base64")}`;
+    this.authHeader = `Basic ${Buffer.from(`${config.username}:${config.password}`, "utf-8").toString("base64")}`;
   }
 
   async sendXml(xml: string, options: SendOptions = {}): Promise<string> {
-    const body = new Uint8Array(iconv.encode(xml, "win1250"));
+    const body = encodeForPohoda(xml);
     const checkDuplicity = options.checkDuplicity ?? this.checkDuplicity;
     const instance = options.instance ?? `${POHODA_APP_NAME}-${Date.now()}`;
 
@@ -52,7 +60,7 @@ export class PohodaClient {
         const resp = await fetch(`${this.baseUrl}/xml`, {
           method: "POST",
           headers: {
-            "Content-Type": "text/xml",
+            "Content-Type": CONTENT_TYPE_XML,
             "STW-Authorization": this.authHeader,
             "Accept-Encoding": "gzip, deflate",
             "STW-Application": POHODA_APP_NAME,
@@ -63,15 +71,15 @@ export class PohodaClient {
           signal: AbortSignal.timeout(this.timeout),
         });
 
-        if (resp.status === 401) throw new Error("Authentication failed (401). Check POHODA_USERNAME/POHODA_PASSWORD.");
-        if (resp.status === 403) throw new Error("Access forbidden (403). User lacks permissions in POHODA.");
-        if (resp.status === 404) throw new Error("Endpoint not found (404). Check POHODA_URL — should point to mServer /xml.");
-        if (resp.status === 408) {
-          if (attempt < this.maxRetries) { await sleep(2000 * (attempt + 1)); continue; }
+        if (resp.status === HTTP.UNAUTHORIZED) throw new Error("Authentication failed (401). Check POHODA_USERNAME/POHODA_PASSWORD.");
+        if (resp.status === HTTP.FORBIDDEN) throw new Error("Access forbidden (403). User lacks permissions in POHODA.");
+        if (resp.status === HTTP.NOT_FOUND) throw new Error("Endpoint not found (404). Check POHODA_URL — should point to mServer /xml.");
+        if (resp.status === HTTP.REQUEST_TIMEOUT) {
+          if (attempt < this.maxRetries) { await sleep(RETRY_BACKOFF_TIMEOUT_MS * (attempt + 1)); continue; }
           throw new Error("Request timeout (408). POHODA took too long to process.");
         }
-        if (resp.status === 503) {
-          if (attempt < this.maxRetries) { await sleep(3000 * (attempt + 1)); continue; }
+        if (resp.status === HTTP.SERVICE_UNAVAILABLE) {
+          if (attempt < this.maxRetries) { await sleep(RETRY_BACKOFF_BUSY_MS * (attempt + 1)); continue; }
           throw new Error("Service unavailable (503). POHODA mServer may be busy.");
         }
         if (!resp.ok) throw new Error(`HTTP ${resp.status}: ${resp.statusText}`);
@@ -84,18 +92,15 @@ export class PohodaClient {
           rawBuf;
 
         const contentType = resp.headers.get("content-type") ?? "";
-        if (contentType.toLowerCase().includes("windows-1250")) {
-          return iconv.decode(dataBuf, "win1250");
-        }
-        return dataBuf.toString("utf-8");
+        return contentType.toLowerCase().includes("windows-1250") ? decodeFromPohoda(dataBuf) : dataBuf.toString("utf-8");
       } catch (err) {
         lastError = err as Error;
         if ((err as Error).name === "TimeoutError" && attempt < this.maxRetries) {
-          await sleep(2000 * (attempt + 1));
+          await sleep(RETRY_BACKOFF_TIMEOUT_MS * (attempt + 1));
           continue;
         }
         if ((err as Error).name === "TimeoutError") {
-          throw new Error(`POHODA mServer did not respond within ${this.timeout / 1000}s.`);
+          throw new Error(`POHODA mServer did not respond within ${this.timeout / MS_PER_SECOND}s.`);
         }
         throw err;
       }
@@ -104,25 +109,17 @@ export class PohodaClient {
   }
 
   async getStatus(): Promise<string> {
-    const resp = await fetch(`${this.baseUrl}/status`, {
-      method: "GET",
-      headers: { "STW-Authorization": this.authHeader },
-      signal: AbortSignal.timeout(10_000),
-    });
-    if (!resp.ok) throw new Error(`Status check failed: HTTP ${resp.status}`);
-    const buf = Buffer.from(await resp.arrayBuffer());
-    return iconv.decode(buf, "win1250");
+    return this.getDecoded(`${this.baseUrl}/status`, STATUS_TIMEOUT_MS, "Status check failed");
   }
 
   async getCompanyInfo(): Promise<string> {
-    const resp = await fetch(`${this.baseUrl}/status?companyDetail`, {
-      method: "GET",
-      headers: { "STW-Authorization": this.authHeader },
-      signal: AbortSignal.timeout(10_000),
-    });
-    if (!resp.ok) throw new Error(`Company info failed: HTTP ${resp.status}`);
-    const buf = Buffer.from(await resp.arrayBuffer());
-    return iconv.decode(buf, "win1250");
+    return this.getDecoded(`${this.baseUrl}/status?companyDetail`, STATUS_TIMEOUT_MS, "Company info failed");
+  }
+
+  private async getDecoded(url: string, timeoutMs: number, failure: string): Promise<string> {
+    const resp = await fetch(url, { method: "GET", headers: { "STW-Authorization": this.authHeader }, signal: AbortSignal.timeout(timeoutMs) });
+    if (!resp.ok) throw new Error(`${failure}: HTTP ${resp.status}`);
+    return decodeFromPohoda(Buffer.from(await resp.arrayBuffer()));
   }
 
   async downloadFile(filePath: string): Promise<Buffer> {
@@ -130,13 +127,12 @@ export class PohodaClient {
     if (normalized.startsWith("..") || path.posix.isAbsolute(normalized)) {
       throw new Error("Path traversal attempt blocked.");
     }
-    const safePath = normalized;
-    const resp = await fetch(`${this.baseUrl}/documents/${encodeURI(safePath)}`, {
+    const resp = await fetch(`${this.baseUrl}/documents/${encodeURI(normalized)}`, {
       method: "GET",
       headers: { "STW-Authorization": this.authHeader },
-      signal: AbortSignal.timeout(30_000),
+      signal: AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS),
     });
-    if (!resp.ok) throw new Error(`File download failed: HTTP ${resp.status} for ${safePath}`);
+    if (!resp.ok) throw new Error(`File download failed: HTTP ${resp.status} for ${normalized}`);
     return Buffer.from(await resp.arrayBuffer());
   }
 }

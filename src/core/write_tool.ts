@@ -4,6 +4,7 @@ import { deriveKey, packIds, sha256Hex, type PackIds } from "./identity.js";
 import type { ToolHost } from "./registry.js";
 import { ok, err, type ToolResult } from "./types.js";
 import { parseResponse, extractImportResult } from "../xml/parser.js";
+import { EncodingError, unencodableCharacters } from "../xml/encoding.js";
 import type { ProposalKind } from "../outbox/types.js";
 
 /**
@@ -50,6 +51,9 @@ export function registerWriteTool<Shape extends ZodRawShape>(host: ToolHost, ctx
       const key = deriveKey(spec.name, params, idempotencyKey);
       const ids = packIds(ctx.config.extSystem, key);
       const xml = spec.build(params as z.objectOutputType<Shape, z.ZodTypeAny>, ids, ctx);
+      // mServer speaks Windows-1250; refuse now rather than mangle silently at send time.
+      const unencodable = unencodableCharacters(xml);
+      if (unencodable.length > 0) throw new EncodingError(unencodable);
       const summary = spec.summary(params as z.objectOutputType<Shape, z.ZodTypeAny>);
 
       if (ctx.config.writeMode === "direct") return sendDirect(ctx, xml, ids, summary);

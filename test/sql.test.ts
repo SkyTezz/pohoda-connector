@@ -20,7 +20,7 @@ describe("SQL read layer", () => {
         table: "fa",
         columns: ["ID", "Cislo", "VarSym", "KcCelkem", "KcLikv"],
         where: [
-          { column: "VarSym", op: "eq", value: "2026002987" },
+          { column: "VarSym", op: "eq", value: "2026000001" },
           { column: "RelTpFak", op: "in", value: [1, 2] },
           { column: "DatLikv", op: "isNull" },
         ],
@@ -33,7 +33,7 @@ describe("SQL read layer", () => {
       "SELECT TOP (1000) [ID], [Cislo], [VarSym], [KcCelkem], [KcLikv] FROM [dbo].[FA] WHERE [VarSym] = @w0 AND [RelTpFak] IN (@w1_0, @w1_1) AND [DatLikv] IS NULL ORDER BY [Datum] DESC",
     );
     expect(built.params).toEqual([
-      { name: "w0", value: "2026002987" },
+      { name: "w0", value: "2026000001" },
       { name: "w1_0", value: 1 },
       { name: "w1_1", value: 2 },
     ]);
@@ -43,5 +43,6 @@ describe("SQL read layer", () => {
     expect(() => buildSelect(dictionary, { table: "sysobjects" }, 10)).toThrow(/unknown POHODA table/);
     expect(() => buildSelect(dictionary, { table: "FA", columns: ["Cislo; DROP TABLE FA"] }, 10)).toThrow(/unknown column/);
     expect(() => buildSelect(dictionary, { table: "FA", where: [{ column: "ID", op: "in", value: 1 }] }, 10)).toThrow(/needs a non-empty array/);
+    expect(() => buildSelect(dictionary, { table: "FA", where: [{ column: "ID", op: "invalidOp" as never, value: 1 }] }, 10)).toThrow(/unsupported operator/);
   });
 });
