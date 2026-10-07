@@ -1,4 +1,4 @@
-import type { PohodaClient } from "../client.js";
+import type { MServer } from "../client.js";
 import type { ConnectorConfig } from "../core/config.js";
 import { assertCanApprove, assertCanSend, type Principal } from "../core/principal.js";
 import { parseResponse, extractImportResult } from "../xml/parser.js";
@@ -28,6 +28,12 @@ const ALLOWED: Record<"approve" | "reject" | "send" | "replay", readonly Proposa
  */
 const DUPLICATE_PATTERN = /duplic/i;
 
+/** Where a proposal's XML goes: the mServer of its accounting unit (`Units`). */
+export interface MServerRouter {
+  hasMServer(unit: string | undefined): boolean;
+  client(unit: string | undefined): Pick<MServer, "sendXml">;
+}
+
 export interface SendOutcome {
   proposal: Proposal;
   duplicate: boolean;
@@ -37,13 +43,19 @@ export class OutboxService {
   constructor(
     private readonly store: OutboxStore,
     private readonly config: Pick<ConnectorConfig, "sandbox" | "autoSendOnApprove">,
-    private readonly client: Pick<PohodaClient, "sendXml">,
+    private readonly mservers: MServerRouter,
   ) {}
 
   /** Idempotent on `key`: the same intended write always maps to the same proposal. */
   async propose(input: NewProposal): Promise<{ proposal: Proposal; created: boolean }> {
     const existing = await this.store.findByKey(input.key);
-    if (existing) return { proposal: existing, created: false };
+    if (existing) {
+      // The key is the document's identity; the same key for another unit is a caller's mistake, not a repeat.
+      if (existing.unit !== undefined && existing.unit !== input.unit) {
+        throw new ProposalStateError(`key "${input.key}" already belongs to a proposal of accounting unit ${existing.unit}`);
+      }
+      return { proposal: existing, created: false };
+    }
     const proposal = await this.store.insert(input);
     return { proposal, created: true };
   }
@@ -74,7 +86,8 @@ export class OutboxService {
   async approve(id: number, principal: Principal, note?: string): Promise<Proposal> {
     assertCanApprove(principal, this.config);
     const approved = await this.move(id, "approve", "approved", { approvedBy: principal.name, approvedAt: new Date().toISOString(), decisionNote: note }, principal, note);
-    if (!this.config.autoSendOnApprove) return approved;
+    // A unit whose mServer is not configured yet keeps its documents approved and waiting.
+    if (!this.config.autoSendOnApprove || !this.mservers.hasMServer(approved.unit)) return approved;
     return (await this.send(id, principal)).proposal;
   }
 
@@ -98,13 +111,15 @@ export class OutboxService {
   private async transmit(id: number, action: "send" | "replay", principal: Principal): Promise<SendOutcome> {
     const before = await this.store.get(id);
     if (!before) throw new ProposalStateError(`proposal ${id} not found`);
+    // Resolved before the state is claimed: no mServer for the unit = nothing changes, the caller is told why.
+    const client = this.mservers.client(before.unit);
     const attempts = before.attempts + 1;
     // Claiming the `sending` state atomically is the lock: a concurrent sender loses here, not at mServer.
     const claimed = await this.move(id, action, "sending", { attempts }, principal, `attempt ${attempts}`);
 
     let responseXml: string;
     try {
-      responseXml = await this.client.sendXml(claimed.xml, { checkDuplicity: true, instance: claimed.datapackId });
+      responseXml = await client.sendXml(claimed.xml, { checkDuplicity: true, instance: claimed.datapackId });
     } catch (e) {
       const error = (e as Error).message;
       const failed = await this.store.transition(id, ["sending"], { state: "failed", error }, { fromState: "sending", toState: "failed", actor: principal.name, note: error });

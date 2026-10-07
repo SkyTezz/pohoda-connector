@@ -1,4 +1,5 @@
 import { ROLES, TokenTable, type Principal, type Role } from "./principal.js";
+import type { UnitConfig } from "./units.js";
 
 /**
  * Runtime configuration, read once from the environment.
@@ -32,15 +33,11 @@ export interface HttpConfig {
 }
 
 export interface ConnectorConfig {
-  /** mServer connection; absent on a SQL-only deployment (reads work, every mServer tool is left out). */
-  pohoda?: {
-    url: string;
-    username: string;
-    password: string;
-    ico: string;
-    timeout: number;
-    maxRetries: number;
-  };
+  /**
+   * Accounting units served. Empty = SQL-only deployment (every mServer tool is left out). A unit
+   * without `mserver` accepts proposals; they are sent once its mServer is configured.
+   */
+  units: UnitConfig[];
   /** `approval` = every write becomes a proposal a human approves; `direct` = pass-through, sandbox only. */
   writeMode: WriteMode;
   /** POHODA documents are cancelled with storno/corrective documents, never deleted. Off by default. */
@@ -135,17 +132,50 @@ function mssqlFromEnv(env: NodeJS.ProcessEnv, prefix: string): MssqlConnection |
   };
 }
 
-/** mServer settings, or undefined when POHODA_URL is unset. A half-configured mServer (URL without user, password or IČO) fails loudly. */
-function pohodaFromEnv(env: NodeJS.ProcessEnv): ConnectorConfig["pohoda"] {
-  if (!env.POHODA_URL) return undefined;
-  return {
-    url: env.POHODA_URL,
-    username: required(env, "POHODA_USERNAME"),
-    password: required(env, "POHODA_PASSWORD"),
-    ico: required(env, "POHODA_ICO"),
-    timeout: int(env, "POHODA_TIMEOUT", DEFAULTS.pohodaTimeoutMs),
-    maxRetries: int(env, "POHODA_MAX_RETRIES", DEFAULTS.pohodaMaxRetries),
-  };
+const ICO = /^\d{6,10}$/;
+
+/**
+ * Accounting units from the environment.
+ *
+ * `POHODA_UNITS` is a JSON object keyed by IČO: `{"12345678": {"name": "...", "mserver": {"url", "username", "password"}}}`;
+ * `mserver` may be left out for a unit whose mServer does not run yet. The single-unit variables
+ * (`POHODA_URL`, `POHODA_USERNAME`, `POHODA_PASSWORD`, `POHODA_ICO`) still describe one unit with an mServer.
+ * A half-configured mServer fails loudly.
+ */
+function unitsFromEnv(env: NodeJS.ProcessEnv): UnitConfig[] {
+  const timeout = int(env, "POHODA_TIMEOUT", DEFAULTS.pohodaTimeoutMs);
+  const maxRetries = int(env, "POHODA_MAX_RETRIES", DEFAULTS.pohodaMaxRetries);
+  const units: UnitConfig[] = [];
+  if (env.POHODA_URL) {
+    units.push({
+      ico: required(env, "POHODA_ICO"),
+      mserver: { url: env.POHODA_URL, username: required(env, "POHODA_USERNAME"), password: required(env, "POHODA_PASSWORD"), timeout, maxRetries },
+    });
+  }
+  if (env.POHODA_UNITS) {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(env.POHODA_UNITS);
+    } catch (e) {
+      throw new Error(`POHODA_UNITS is not valid JSON: ${(e as Error).message}`);
+    }
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("POHODA_UNITS must be an object keyed by IČO");
+    for (const [ico, raw] of Object.entries(parsed as Record<string, unknown>)) {
+      const def = (raw ?? {}) as { name?: unknown; mserver?: { url?: unknown; username?: unknown; password?: unknown } };
+      if (typeof def !== "object" || Array.isArray(def)) throw new Error(`POHODA_UNITS["${ico}"] must be an object`);
+      if (def.name !== undefined && typeof def.name !== "string") throw new Error(`POHODA_UNITS["${ico}"].name must be a string`);
+      const m = def.mserver;
+      if (m !== undefined && (typeof m.url !== "string" || !m.url || typeof m.username !== "string" || !m.username || typeof m.password !== "string" || !m.password)) {
+        throw new Error(`POHODA_UNITS["${ico}"].mserver needs url, username and password`);
+      }
+      units.push({ ico, name: def.name, mserver: m ? { url: m.url as string, username: m.username as string, password: m.password as string, timeout, maxRetries } : undefined });
+    }
+  }
+  for (const unit of units) {
+    if (!ICO.test(unit.ico)) throw new Error(`accounting unit "${unit.ico}": IČO must be 6-10 digits`);
+  }
+  if (new Set(units.map((u) => u.ico)).size !== units.length) throw new Error("accounting units: an IČO is configured twice (POHODA_ICO and POHODA_UNITS)");
+  return units;
 }
 
 const FORBIDDEN_TOKEN_KEYS = new Set(["__proto__", "constructor", "prototype"]);
@@ -183,8 +213,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ConnectorConfi
     throw new Error("CONNECTOR_STORE=mssql needs CONNECTOR_STORE_MSSQL_SERVER/_DATABASE/_USER/_PASSWORD");
   }
   const sql = mssqlFromEnv(env, "POHODA_SQL");
-  const pohoda = pohodaFromEnv(env);
-  if (!pohoda && !sql) {
+  const units = unitsFromEnv(env);
+  if (units.length === 0 && !sql) {
     throw new Error("Missing required environment variable: POHODA_URL (mServer) or POHODA_SQL_SERVER (read-only SQL) — nothing to connect to");
   }
   const tokens = parseTokens(env.CONNECTOR_TOKENS);
@@ -203,7 +233,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ConnectorConfi
   }
 
   return {
-    pohoda,
+    units,
     writeMode,
     allowDelete: bool(env, "CONNECTOR_ALLOW_DELETE", false),
     autoSendOnApprove: bool(env, "CONNECTOR_AUTO_SEND_ON_APPROVE", true),

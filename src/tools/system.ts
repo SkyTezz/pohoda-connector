@@ -35,7 +35,8 @@ function parseCompanyInfoXml(xml: string): { companyName?: string; databaseName?
   };
 }
 
-export function registerSystemTools(host: ToolHost, ctx: ConnectorContext): void {
+/** mServer status, company info and document files of ONE accounting unit (registered per unit). */
+export function registerMServerStatusTools(host: ToolHost, ctx: ConnectorContext): void {
   host.tool(
     "pohoda_status",
     "Get POHODA mServer status: processing queue count, server state (idle/working), and server address. Use to check if the server is ready to accept requests.",
@@ -75,32 +76,6 @@ export function registerSystemTools(host: ToolHost, ctx: ConnectorContext): void
   );
 
   host.tool(
-    "pohoda_connector_info",
-    "Describe this connector instance: write mode, delete policy, sandbox flag, your principal and role, SQL availability. Read this first.",
-    {},
-    async () => {
-      const c = ctx.config;
-      return ok(
-        JSON.stringify(
-          {
-            writeMode: c.writeMode,
-            allowDelete: c.allowDelete,
-            autoSendOnApprove: c.autoSendOnApprove,
-            sandbox: c.sandbox,
-            extSystem: c.extSystem,
-            principal: ctx.principal,
-            canApprove: ctx.principal.role === "human" || c.sandbox,
-            mserver: c.pohoda ? { ico: c.pohoda.ico } : null,
-            sql: ctx.sql ? { database: ctx.sql.database, otherDatabases: "pohoda_sql_databases" } : null,
-          },
-          null,
-          2,
-        ),
-      );
-    },
-  );
-
-  host.tool(
     "pohoda_download_file",
     "Download a file from POHODA documents storage. Returns file size and base64 content for files under 100KB; for larger files returns size info only. Path is relative to documents root.",
     { filePath: z.string().describe("Relative path to the file in POHODA documents storage") },
@@ -116,6 +91,35 @@ export function registerSystemTools(host: ToolHost, ctx: ConnectorContext): void
       } catch (e) {
         return err((e as Error).message);
       }
+    },
+  );
+}
+
+/** What this connector is and may do; needs no mServer. */
+export function registerSystemTools(host: ToolHost, ctx: ConnectorContext): void {
+  host.tool(
+    "pohoda_connector_info",
+    "Describe this connector instance: write mode, delete policy, sandbox flag, your principal and role, the accounting units it serves (IČO, whether their mServer is configured) and SQL availability. Read this first.",
+    {},
+    async () => {
+      const c = ctx.config;
+      return ok(
+        JSON.stringify(
+          {
+            writeMode: c.writeMode,
+            allowDelete: c.allowDelete,
+            autoSendOnApprove: c.autoSendOnApprove,
+            sandbox: c.sandbox,
+            extSystem: c.extSystem,
+            principal: ctx.principal,
+            canApprove: ctx.principal.role === "human" || c.sandbox,
+            accountingUnits: ctx.units.list(),
+            sql: ctx.sql ? { database: ctx.sql.database, otherDatabases: "pohoda_sql_databases" } : null,
+          },
+          null,
+          2,
+        ),
+      );
     },
   );
 }

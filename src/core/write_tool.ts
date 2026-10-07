@@ -48,7 +48,9 @@ export function registerWriteTool<Shape extends ZodRawShape>(host: ToolHost, ctx
       if (spec.kind === "delete" && !ctx.config.allowDelete) {
         return err(`${spec.name} is disabled: POHODA documents are reversed with storno/corrective documents, never deleted (CONNECTOR_ALLOW_DELETE=false).`);
       }
-      const key = deriveKey(spec.name, params, idempotencyKey);
+      // The unit is part of a derived key: the same arguments for two companies are two documents.
+      const unit = ctx.client.ico;
+      const key = deriveKey(spec.name, { ...params, accountingUnit: unit }, idempotencyKey);
       const ids = packIds(ctx.config.extSystem, key);
       const xml = spec.build(params as z.objectOutputType<Shape, z.ZodTypeAny>, ids, ctx);
       // mServer speaks Windows-1250; refuse now rather than mangle silently at send time.
@@ -60,6 +62,7 @@ export function registerWriteTool<Shape extends ZodRawShape>(host: ToolHost, ctx
 
       const { proposal, created } = await ctx.outbox.propose({
         key,
+        unit,
         tool: spec.name,
         kind: spec.kind,
         agenda: spec.agenda,
@@ -78,6 +81,7 @@ export function registerWriteTool<Shape extends ZodRawShape>(host: ToolHost, ctx
             outcome: created ? "proposed" : "already_proposed",
             proposalId: proposal.id,
             key: proposal.key,
+            accountingUnit: proposal.unit,
             state: proposal.state,
             tool: proposal.tool,
             summary: proposal.summary,

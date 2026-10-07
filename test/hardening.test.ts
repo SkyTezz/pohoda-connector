@@ -1,6 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { request as httpRequest } from "node:http";
-import { MSERVER_NOT_CONFIGURED, unconfiguredPohodaClient } from "../src/client.js";
 import { loadConfig, parseTokens } from "../src/core/config.js";
 import { principalFromBearer } from "../src/core/principal.js";
 import { startHttpServer } from "../src/http/server.js";
@@ -50,20 +49,19 @@ describe("configuration gates", () => {
   });
 
   it("runs SQL-only without mServer, never with nothing to connect to or a half-configured mServer", async () => {
-    const sqlOnly = (await harness({ pohoda: undefined })).registryFor(AGENT);
+    const sqlOnly = (await harness({ units: [] })).registryFor(AGENT);
     expect(sqlOnly.has("pohoda_connector_info")).toBe(true);
     expect(sqlOnly.has("pohoda_proposals_list")).toBe(true);
     expect(sqlOnly.has("pohoda_create_invoice")).toBe(false);
     expect(sqlOnly.has("pohoda_list_invoices")).toBe(false);
     const sqlEnv = { POHODA_SQL_SERVER: "sql.lan", POHODA_SQL_DATABASE: "StwPh_12345678_2025", POHODA_SQL_USER: "ro", POHODA_SQL_PASSWORD: "p" };
     const cfg = loadConfig({ ...sqlEnv, POHODA_SQL_ALLOWED_ICOS: "12345678, 87654321" });
-    expect(cfg.pohoda).toBeUndefined();
+    expect(cfg.units).toEqual([]);
     expect(cfg.sql?.allowedIcos).toEqual(["12345678", "87654321"]);
     expect(loadConfig(sqlEnv).sql?.allowedIcos).toEqual([]);
     expect(() => loadConfig({})).toThrow(/Missing required environment variable: POHODA_URL/);
-    expect(() => loadConfig({ ...sqlEnv, POHODA_URL: "http://p:444" })).toThrow(/POHODA_USERNAME/);
-    expect(() => unconfiguredPohodaClient().ico).toThrow(MSERVER_NOT_CONFIGURED);
-    expect(() => unconfiguredPohodaClient().sendXml("<x/>")).toThrow(MSERVER_NOT_CONFIGURED);
+    expect(() => loadConfig({ ...sqlEnv, POHODA_URL: "http://p:444" })).toThrow(/POHODA_(ICO|USERNAME)/);
+    expect(loadConfig(baseEnv).units.map((u) => [u.ico, u.mserver?.url])).toEqual([["12345678", "http://p:444"]]);
   });
 });
 

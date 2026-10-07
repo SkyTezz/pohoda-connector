@@ -31,21 +31,6 @@ const RETRY_BACKOFF_BUSY_MS = 3_000;
 const MS_PER_SECOND = 1_000;
 const CONTENT_TYPE_XML = "text/xml";
 
-export const MSERVER_NOT_CONFIGURED = "POHODA mServer is not configured on this connector (POHODA_URL is unset); only SQL reads are available";
-
-/**
- * Stands where a client is expected on a SQL-only deployment. It holds no fake
- * settings: touching anything on it throws the reason, so a tool that reaches
- * mServer by mistake fails loudly instead of sending to nowhere.
- */
-export function unconfiguredPohodaClient(): PohodaClient {
-  return new Proxy({} as PohodaClient, {
-    get() {
-      throw new Error(MSERVER_NOT_CONFIGURED);
-    },
-  });
-}
-
 /** Thin HTTP client for POHODA mServer: Windows-1250 both ways, Basic auth, serial processing on the server side. */
 export class PohodaClient {
   private readonly baseUrl: string;
@@ -166,3 +151,6 @@ function safeInflate(buf: Buffer): Buffer {
     return inflateRawSync(buf);
   }
 }
+
+/** What tools and the outbox use of an mServer; `Units.routed` implements it per call, tests fake it. */
+export type MServer = Pick<PohodaClient, "ico" | "sendXml" | "getStatus" | "getCompanyInfo" | "downloadFile">;

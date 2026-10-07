@@ -12,6 +12,7 @@ const SCHEMA = `
 CREATE TABLE IF NOT EXISTS proposals (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   key TEXT NOT NULL UNIQUE,
+  unit TEXT,
   tool TEXT NOT NULL,
   kind TEXT NOT NULL,
   agenda TEXT NOT NULL,
@@ -62,6 +63,9 @@ export class SqliteOutboxStore implements OutboxStore {
     this.db = new DatabaseSync(this.filePath);
     this.db.exec("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;");
     this.db.exec(SCHEMA);
+    // A store created before accounting units existed has no `unit` column; its rows keep NULL.
+    const columns = this.db.prepare("PRAGMA table_info(proposals)").all() as Array<{ name: string }>;
+    if (!columns.some((c) => c.name === "unit")) this.db.exec("ALTER TABLE proposals ADD COLUMN unit TEXT");
     if (onDisk) chmodSync(this.filePath, OWNER_ONLY);
   }
 
@@ -80,11 +84,11 @@ export class SqliteOutboxStore implements OutboxStore {
     const at = nowIso();
     const result = db
       .prepare(
-        `INSERT INTO proposals (key, tool, kind, agenda, summary, args_json, xml, xml_hash, datapack_id, item_id,
+        `INSERT INTO proposals (key, unit, tool, kind, agenda, summary, args_json, xml, xml_hash, datapack_id, item_id,
            state, proposed_by, proposed_at, reason, attempts)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'proposed', ?, ?, ?, 0)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'proposed', ?, ?, ?, 0)`,
       )
-      .run(p.key, p.tool, p.kind, p.agenda, p.summary, JSON.stringify(p.args), p.xml, p.xmlHash, p.datapackId, p.itemId, p.proposedBy, at, p.reason ?? null);
+      .run(p.key, p.unit, p.tool, p.kind, p.agenda, p.summary, JSON.stringify(p.args), p.xml, p.xmlHash, p.datapackId, p.itemId, p.proposedBy, at, p.reason ?? null);
     const id = Number(result.lastInsertRowid);
     db.prepare("INSERT INTO proposal_events (proposal_id, from_state, to_state, actor, at, note) VALUES (?, NULL, 'proposed', ?, ?, ?)").run(
       id,
@@ -110,6 +114,10 @@ export class SqliteOutboxStore implements OutboxStore {
     if (filter.tool) {
       where.push("tool = ?");
       params.push(filter.tool);
+    }
+    if (filter.unit) {
+      where.push("unit = ?");
+      params.push(filter.unit);
     }
     const sql = `SELECT * FROM proposals${where.length ? ` WHERE ${where.join(" AND ")}` : ""} ORDER BY id DESC LIMIT ?`;
     params.push(clampLimit(filter.limit));

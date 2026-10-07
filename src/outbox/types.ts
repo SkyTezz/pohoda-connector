@@ -19,6 +19,8 @@ export interface Proposal {
   id: number;
   /** Idempotency key = dataPackItem@id = extId/ids. Unique. */
   key: string;
+  /** IČO of the accounting unit the document is for; absent only on rows written before units existed. */
+  unit?: string;
   tool: string;
   kind: ProposalKind;
   agenda: string;
@@ -47,6 +49,7 @@ export interface Proposal {
 
 export interface NewProposal {
   key: string;
+  unit: string;
   tool: string;
   kind: ProposalKind;
   agenda: string;
@@ -87,6 +90,7 @@ export interface ProposalPatch {
 
 export interface ProposalFilter {
   state?: ProposalState;
+  unit?: string;
   tool?: string;
   limit?: number;
 }

@@ -8,6 +8,7 @@ IF OBJECT_ID('dbo.proposals', 'U') IS NULL
 CREATE TABLE dbo.proposals (
   id INT IDENTITY(1,1) PRIMARY KEY,
   [key] NVARCHAR(64) NOT NULL UNIQUE,
+  unit NVARCHAR(10) NULL,
   tool NVARCHAR(80) NOT NULL,
   kind NVARCHAR(16) NOT NULL,
   agenda NVARCHAR(40) NOT NULL,
@@ -33,6 +34,9 @@ CREATE TABLE dbo.proposals (
   response_xml NVARCHAR(MAX) NULL,
   error NVARCHAR(MAX) NULL
 );
+-- A store created before accounting units existed has no unit column; its rows keep NULL.
+IF COL_LENGTH('dbo.proposals', 'unit') IS NULL
+  ALTER TABLE dbo.proposals ADD unit NVARCHAR(10) NULL;
 IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'ix_proposals_state')
   CREATE INDEX ix_proposals_state ON dbo.proposals(state, id);
 IF OBJECT_ID('dbo.proposal_events', 'U') IS NULL
@@ -85,6 +89,7 @@ export class MssqlOutboxStore implements OutboxStore {
     const at = nowIso();
     const res = await this.request()
       .input("key", sql.NVarChar(64), p.key)
+      .input("unit", sql.NVarChar(10), p.unit)
       .input("tool", sql.NVarChar(80), p.tool)
       .input("kind", sql.NVarChar(16), p.kind)
       .input("agenda", sql.NVarChar(40), p.agenda)
@@ -98,10 +103,10 @@ export class MssqlOutboxStore implements OutboxStore {
       .input("proposed_at", sql.NVarChar(40), at)
       .input("reason", sql.NVarChar(sql.MAX), p.reason ?? null)
       .query<{ id: number }>(
-        `INSERT INTO dbo.proposals ([key], tool, kind, agenda, summary, args_json, xml, xml_hash, datapack_id, item_id,
+        `INSERT INTO dbo.proposals ([key], unit, tool, kind, agenda, summary, args_json, xml, xml_hash, datapack_id, item_id,
            state, proposed_by, proposed_at, reason, attempts)
          OUTPUT INSERTED.id
-         VALUES (@key, @tool, @kind, @agenda, @summary, @args_json, @xml, @xml_hash, @datapack_id, @item_id,
+         VALUES (@key, @unit, @tool, @kind, @agenda, @summary, @args_json, @xml, @xml_hash, @datapack_id, @item_id,
            'proposed', @proposed_by, @proposed_at, @reason, 0)`,
       );
     const id = res.recordset[0].id;
@@ -129,6 +134,10 @@ export class MssqlOutboxStore implements OutboxStore {
     if (filter.tool) {
       where.push("tool = @tool");
       req.input("tool", sql.NVarChar(80), filter.tool);
+    }
+    if (filter.unit) {
+      where.push("unit = @unit");
+      req.input("unit", sql.NVarChar(10), filter.unit);
     }
     const res = await req.query<ProposalRow>(
       `SELECT TOP (@limit) * FROM dbo.proposals${where.length ? ` WHERE ${where.join(" AND ")}` : ""} ORDER BY id DESC`,

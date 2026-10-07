@@ -72,8 +72,44 @@ every SQL tool takes `database` to read another one. Which ones is decided by `P
 configured unit's other years, a comma-separated list of IČO = those units, `*` = every unit of the installation.
 Anything that is not a unit database of the same installation (`master`, `StwPh_sys`, another prefix) is refused.
 
-**SQL-only deployment:** leave `POHODA_URL` unset. The connector starts with SQL reads and the proposal tools only;
-tools that need mServer are not registered, so nothing can be sent to a server that is not there.
+**SQL-only deployment:** configure no accounting unit. The connector starts with SQL reads and the proposal tools
+only; tools that need mServer are not registered, so nothing can be sent to a server that is not there.
+
+## Several accounting units
+
+POHODA runs one mServer configuration per accounting unit, each on its own port. One connector serves them all:
+
+```
+POHODA_UNITS={"12345678":{"name":"First s.r.o.","mserver":{"url":"http://pohoda-host:444","username":"…","password":"…"}},"87654321":{"name":"Second a.s."}}
+```
+
+Every mServer tool then takes `accountingUnit` (the IČO; optional only when a single unit is configured), builds the
+document for that unit and talks to that unit's mServer. `pohoda_connector_info` lists the units and whether their
+mServer is configured. The single-unit variables (`POHODA_URL`, `POHODA_USERNAME`, `POHODA_PASSWORD`, `POHODA_ICO`)
+still work and describe one unit.
+
+**A unit without `mserver` is a queue.** Its documents are proposed and approved as usual and stay `approved`; sending
+says why it cannot (`mServer of accounting unit … is not configured`). Add the unit's `mserver` and send them — the
+frozen XML and its ids are the ones that were approved. Useful when mServer runs only in a time window, or not yet.
+
+A proposal belongs to one unit. The same arguments for two units are two documents; an explicit `idempotencyKey`
+belongs to the unit that used it first.
+
+## Received invoices
+
+`pohoda_create_invoice` with `invoiceType: "receivedInvoice"` (or `commitment`, `receivedAdvanceInvoice`):
+
+- `originalDocument` = the supplier's own invoice number, `symVar` = the payment symbol (they often differ),
+  `dateApplicationVAT`, `dateKHDPH`, `numberKHDPH`, `paymentAccount` = the supplier's bank account.
+- **Header totals instead of items** — `totals: {priceNone, priceLow, priceLowVAT, priceHigh, priceHighVAT}` books a
+  document without lines, the way most received invoices are entered by hand. Do not combine with `items`.
+- **Split over lines** — `items[]`, each with its own `accounting` and `classificationVAT`, when one document is
+  booked to several accounts.
+- Amounts may be exact decimal text (`"70.58"`); text is sent verbatim, never through a float.
+- `attachments: [{name, url}]` puts links on the document's *Dokumenty* tab (e.g. the stored scan).
+
+The XML these produce validates against Stormware's published `data.xsd`; importing attachments and header totals
+has not yet been exercised against a live POHODA — verify on a sandbox unit first.
 
 Every write tool accepts `idempotencyKey` (1-48 chars `[A-Za-z0-9._:-]`, e.g. `order-invoice:2026000001:r1`) and
 `reason` (shown to the approver).

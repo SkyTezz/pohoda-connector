@@ -42,6 +42,7 @@ export interface ProposalRow {
   args_json: string;
   xml: string;
   xml_hash: string;
+  unit: string | null;
   datapack_id: string;
   item_id: string;
   state: string;
@@ -65,6 +66,7 @@ export function rowToProposal(row: ProposalRow): Proposal {
   return {
     id: Number(row.id),
     key: row.key,
+    unit: row.unit ?? undefined,
     tool: row.tool,
     kind: row.kind as Proposal["kind"],
     agenda: row.agenda,

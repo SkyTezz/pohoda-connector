@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { PohodaClient, unconfiguredPohodaClient } from "./client.js";
 import { loadConfig } from "./core/config.js";
+import { Units } from "./core/units.js";
 import { startHttpServer } from "./http/server.js";
 import { MssqlOutboxStore } from "./outbox/mssql_store.js";
 import { OutboxService } from "./outbox/service.js";
@@ -14,11 +14,11 @@ import { SqlReader } from "./sql/reader.js";
 
 async function main(): Promise<void> {
   const config = loadConfig();
-  const client = config.pohoda ? new PohodaClient({ ...config.pohoda, checkDuplicity: true }) : unconfiguredPohodaClient();
+  const units = new Units(config.units);
 
   const store: OutboxStore = config.store.kind === "mssql" ? new MssqlOutboxStore(config.store.mssql!) : new SqliteOutboxStore(config.store.sqlitePath);
   await store.init();
-  const outbox = new OutboxService(store, config, client);
+  const outbox = new OutboxService(store, config, units);
 
   let sql: SqlReader | undefined;
   if (config.sql) {
@@ -26,11 +26,11 @@ async function main(): Promise<void> {
     await sql.connect();
   }
 
-  const deps: ServerDeps = { config, client, outbox, sql };
+  const deps: ServerDeps = { config, units, outbox, sql };
 
   if (config.transport === "http") {
     const { port } = await startHttpServer(deps);
-    console.error(`pohoda-connector ${packageVersion()} listening on http://${config.http.host}:${port} (mode=${config.writeMode}, sandbox=${config.sandbox}, mserver=${config.pohoda ? "on" : "off"}, sql=${sql ? "on" : "off"})`);
+    console.error(`pohoda-connector ${packageVersion()} listening on http://${config.http.host}:${port} (mode=${config.writeMode}, sandbox=${config.sandbox}, units=${units.list().map((u) => `${u.ico}${u.mserver ? "" : "(no mServer)"}`).join(",") || "none"}, sql=${sql ? "on" : "off"})`);
     return;
   }
 

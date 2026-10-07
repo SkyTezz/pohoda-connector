@@ -23,6 +23,7 @@ import {
   classificationVATSchema,
   foreignCurrencySchema,
   hasPartner,
+  amountSchema,
   money,
   partnerSchema,
   paymentSchema,
@@ -55,7 +56,7 @@ const invoiceItemSchema = z.object({
   text: z.string().max(90).describe("Item text (max 90 chars)"),
   quantity: z.number().default(1),
   unit: z.string().max(10).optional(),
-  unitPrice: z.number().describe("Unit price; with VAT when payVAT=true, without VAT otherwise"),
+  unitPrice: amountSchema.describe("Unit price (number, or exact decimal text such as \"70.58\"); with VAT when payVAT=true, without VAT otherwise"),
   payVAT: z.boolean().optional().describe("true = unitPrice includes VAT (default false)"),
   rateVAT: vatRateEnum.default("none"),
   discountPercentage: z.number().min(0).max(100).optional(),
@@ -84,7 +85,10 @@ const invoiceHeaderFields = {
   dateAccounting: z.string().optional().describe("Accounting date (defaults to date)"),
   dateDue: z.string().optional().describe("Due date"),
   dateKHDPH: z.string().optional().describe("VAT control statement date (received documents)"),
+  dateApplicationVAT: z.string().optional().describe("Date the VAT deduction is claimed (received documents)"),
+  numberKHDPH: z.string().max(32).optional().describe("Document number reported in the VAT control statement, when it differs from the original document number"),
   symVar: z.string().max(20).optional().describe("Variable symbol (defaults to number)"),
+  originalDocument: z.string().max(32).optional().describe("Number of the original document: on received documents the supplier's own invoice number"),
   symConst: z.string().max(4).optional(),
   symSpec: z.string().max(16).optional(),
   symPar: z.string().max(20).optional().describe("Pairing symbol"),
@@ -96,6 +100,24 @@ const invoiceHeaderFields = {
   dateOrder: z.string().optional(),
   paymentType: paymentSchema.optional().describe("Form of payment"),
   account: refSchema.optional().describe("Bank account / cash register to be paid to (receivables only)"),
+  paymentAccount: z
+    .object({ accountNo: z.string().max(34), bankCode: z.string().max(11) })
+    .optional()
+    .describe("The partner's bank account the document is paid to (commitments: used by payment orders)"),
+  totals: z
+    .object({
+      priceNone: amountSchema.optional().describe("Base at 0 %"),
+      priceLow: amountSchema.optional().describe("Base at the reduced rate"),
+      priceLowVAT: amountSchema.optional().describe("VAT at the reduced rate"),
+      priceHigh: amountSchema.optional().describe("Base at the standard rate"),
+      priceHighVAT: amountSchema.optional().describe("VAT at the standard rate"),
+    })
+    .optional()
+    .describe("Document totals for a document WITHOUT items (amounts entered on the header, as accountants book most received invoices). Do not combine with items."),
+  attachments: z
+    .array(z.object({ name: z.string().max(255), url: z.string().url().max(255) }))
+    .optional()
+    .describe("Links shown on the document's Dokumenty tab, e.g. the scanned original. Verify on a sandbox unit: not yet exercised against a live POHODA."),
   centre: refSchema.optional(),
   activity: refSchema.optional(),
   contract: refSchema.optional(),
@@ -114,14 +136,17 @@ function buildInvoiceHeader(inv: XMLBuilder, params: InvoiceHeaderParams & { inv
   header.ele(NS.inv, "inv:invoiceType").txt(params.invoiceType);
   if (params.number) addNumberRequested(header, NS.inv, "inv", params.number, params.checkNumberDuplicity ?? true);
   addText(header, NS.inv, "inv:symVar", params.symVar);
+  addText(header, NS.inv, "inv:originalDocument", params.originalDocument);
   addText(header, NS.inv, "inv:symPar", params.symPar);
   addDate(header, NS.inv, "inv:date", params.date);
   addDate(header, NS.inv, "inv:dateTax", params.dateTax);
   addDate(header, NS.inv, "inv:dateAccounting", params.dateAccounting);
   addDate(header, NS.inv, "inv:dateKHDPH", params.dateKHDPH);
   addDate(header, NS.inv, "inv:dateDue", params.dateDue);
+  addDate(header, NS.inv, "inv:dateApplicationVAT", params.dateApplicationVAT);
   if (params.accounting) addAccounting(header, NS.inv, "inv", params.accounting);
   if (params.classificationVAT) addClassificationVAT(header, NS.inv, "inv", params.classificationVAT);
+  addText(header, NS.inv, "inv:numberKHDPH", params.numberKHDPH);
   addText(header, NS.inv, "inv:text", params.text);
   if (hasPartner(params.partner)) addPartnerIdentity(header, NS.inv, "inv", params.partner, exSystem);
   addText(header, NS.inv, "inv:numberOrder", params.numberOrder);
@@ -130,6 +155,11 @@ function buildInvoiceHeader(inv: XMLBuilder, params: InvoiceHeaderParams & { inv
   if (params.account) addRef(header, NS.inv, "inv:account", params.account);
   addText(header, NS.inv, "inv:symConst", params.symConst);
   addText(header, NS.inv, "inv:symSpec", params.symSpec);
+  if (params.paymentAccount) {
+    const account = header.ele(NS.inv, "inv:paymentAccount");
+    account.ele(NS.typ, "typ:accountNo").txt(params.paymentAccount.accountNo);
+    account.ele(NS.typ, "typ:bankCode").txt(params.paymentAccount.bankCode);
+  }
   if (params.centre) addRef(header, NS.inv, "inv:centre", params.centre);
   if (params.activity) addRef(header, NS.inv, "inv:activity", params.activity);
   if (params.contract) addRef(header, NS.inv, "inv:contract", params.contract);
@@ -174,9 +204,30 @@ function buildInvoiceDetail(
   }
 }
 
+const TOTALS_ORDER = ["priceNone", "priceLow", "priceLowVAT", "priceHigh", "priceHighVAT"] as const;
+
+/** Records of the Dokumenty tab; only URL links, the file stays where it is stored. */
+function buildAttachments(inv: XMLBuilder, attachments: InvoiceHeaderParams["attachments"]): void {
+  if (!attachments?.length) return;
+  const el = inv.ele(NS.inv, "inv:attachments");
+  for (const a of attachments) {
+    const link = el.ele(NS.typ, "typ:urlAddress");
+    link.ele(NS.typ, "typ:name").txt(a.name);
+    link.ele(NS.typ, "typ:url").txt(a.url);
+  }
+}
+
 function buildInvoiceSummary(inv: XMLBuilder, params: InvoiceHeaderParams): void {
   const summary = inv.ele(NS.inv, "inv:invoiceSummary");
   if (params.roundingDocument) summary.ele(NS.inv, "inv:roundingDocument").txt(params.roundingDocument);
+  if (params.totals) {
+    // Element order is fixed by typeCurrencyHome in type.xsd.
+    const home = summary.ele(NS.inv, "inv:homeCurrency");
+    for (const field of TOTALS_ORDER) {
+      const value = params.totals[field];
+      if (value !== undefined) home.ele(NS.typ, `typ:${field}`).txt(money(value));
+    }
+  }
   if (params.foreignCurrency) addForeignCurrency(summary, NS.inv, "inv", params.foreignCurrency);
 }
 
@@ -235,8 +286,10 @@ export function registerInvoiceTools(host: ToolHost, ctx: ConnectorContext): voi
       buildImportDoc({ ico: c.client.ico, note: `${p.invoiceType} ${p.number ?? ""}`.trim() }, ids, (item) => {
         const inv = item.ele(NS.inv, "inv:invoice").att("version", "2.0");
         buildInvoiceHeader(inv, p, ids.extIds, c.config.extSystem);
+        if (p.totals && p.items?.length) throw new Error("give either items or totals: totals are for a document without items");
         buildInvoiceDetail(inv, p.items, p.advancePayments, p.foreignCurrency != null, c.config.extSystem);
         buildInvoiceSummary(inv, p);
+        buildAttachments(inv, p.attachments);
       }),
   });
 

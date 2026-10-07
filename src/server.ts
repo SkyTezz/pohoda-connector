@@ -2,14 +2,14 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import type { PohodaClient } from "./client.js";
 import type { ConnectorConfig } from "./core/config.js";
 import type { ConnectorContext } from "./core/context.js";
 import type { Principal } from "./core/principal.js";
 import { ToolRegistry } from "./core/registry.js";
+import type { Units } from "./core/units.js";
 import type { OutboxService } from "./outbox/service.js";
 import type { SqlReader } from "./sql/reader.js";
-import { registerSystemTools } from "./tools/system.js";
+import { registerMServerStatusTools, registerSystemTools } from "./tools/system.js";
 import { registerAddressTools } from "./tools/addresses.js";
 import { registerInvoiceTools } from "./tools/invoices.js";
 import { registerOrderTools } from "./tools/orders.js";
@@ -29,7 +29,7 @@ import { registerSqlTools } from "./tools/sql.js";
 
 export interface ServerDeps {
   config: ConnectorConfig;
-  client: PohodaClient;
+  units: Units;
   outbox: OutboxService;
   sql?: SqlReader;
 }
@@ -42,15 +42,23 @@ export function packageVersion(): string {
 
 /** Register every tool for one principal. `withMcp=false` builds a REST-only registry. */
 export function createRegistry(deps: ServerDeps, principal: Principal, withMcp: boolean): { registry: ToolRegistry; mcp?: McpServer } {
-  const ctx: ConnectorContext = { ...deps, principal };
+  const ctx: ConnectorContext = { ...deps, client: deps.units.routed, principal };
   const mcp = withMcp ? new McpServer({ name: "pohoda-connector", version: packageVersion() }) : undefined;
   const registry = new ToolRegistry(mcp);
 
   registerSystemTools(registry, ctx);
   registerProposalTools(registry, ctx);
   registerSqlTools(registry, ctx);
-  // Everything below talks to mServer; a SQL-only deployment does not offer tools that cannot work.
-  if (!deps.config.pohoda) return { registry, mcp };
+  // Everything below is for one accounting unit and its mServer; a SQL-only deployment (no unit) does
+  // not offer tools that cannot work. A unit whose mServer is not configured yet still gets them:
+  // its documents are proposed and approved now and sent later.
+  if (deps.units.size === 0) return { registry, mcp };
+  registry.forEachUnit((unit, fn) => deps.units.run(unit, fn), () => registerUnitTools(registry, ctx));
+  return { registry, mcp };
+}
+
+function registerUnitTools(registry: ToolRegistry, ctx: ConnectorContext): void {
+  registerMServerStatusTools(registry, ctx);
   registerAddressTools(registry, ctx);
   registerInvoiceTools(registry, ctx);
   registerBankTools(registry, ctx);
@@ -65,6 +73,4 @@ export function createRegistry(deps: ServerDeps, principal: Principal, withMcp: 
   registerProductionTools(registry, ctx);
   registerReportTools(registry, ctx);
   registerSettingsTools(registry, ctx);
-
-  return { registry, mcp };
 }

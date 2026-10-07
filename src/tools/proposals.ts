@@ -16,14 +16,16 @@ export function registerProposalTools(host: ToolHost, ctx: ConnectorContext): vo
     {
       state: stateEnum.optional().describe("proposed | approved | rejected | sending | sent | refused | failed"),
       tool: z.string().optional().describe("Only proposals created by this tool, e.g. pohoda_create_invoice"),
+      accountingUnit: z.string().optional().describe("Only proposals of this accounting unit (IČO)"),
       limit: z.number().int().min(1).max(200).optional().describe("Max rows (default 50)"),
     },
-    async (params) => {
+    async ({ accountingUnit, ...params }) => {
       try {
-        const rows = await ctx.outbox.list(params);
+        const rows = await ctx.outbox.list({ ...params, unit: accountingUnit });
         const compact = rows.map((p) => ({
           id: p.id,
           state: p.state,
+          accountingUnit: p.unit,
           tool: p.tool,
           kind: p.kind,
           summary: p.summary,
@@ -114,6 +116,6 @@ export function registerProposalTools(host: ToolHost, ctx: ConnectorContext): vo
   );
 }
 
-function summarize(p: { id: number; state: string; tool: string; summary: string; key: string; pohodaId?: number; responseNote?: string; error?: string; attempts: number }) {
-  return { id: p.id, state: p.state, tool: p.tool, summary: p.summary, key: p.key, pohodaId: p.pohodaId, responseNote: p.responseNote, error: p.error, attempts: p.attempts };
+function summarize(p: { id: number; state: string; unit?: string; tool: string; summary: string; key: string; pohodaId?: number; responseNote?: string; error?: string; attempts: number }) {
+  return { id: p.id, state: p.state, accountingUnit: p.unit, tool: p.tool, summary: p.summary, key: p.key, pohodaId: p.pohodaId, responseNote: p.responseNote, error: p.error, attempts: p.attempts };
 }

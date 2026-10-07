@@ -244,6 +244,13 @@ export function addText(parent: XMLBuilder, ns: string, tag: string, value: stri
 }
 
 /** POHODA takes decimals with a dot; two places are enough for CZK/EUR amounts, quantities keep what they carry. */
-export function money(value: number): string {
+/**
+ * An amount a caller may give as exact decimal text ("1234.50"). Text goes to POHODA verbatim;
+ * a JS number is kept for existing callers and is only as exact as a float can be.
+ */
+export const amountSchema = z.union([z.number(), z.string().regex(/^-?\d{1,15}(\.\d{1,4})?$/, "decimal number as text, dot as the separator")]);
+
+export function money(value: number | string): string {
+  if (typeof value === "string") return value;
   return Number.isInteger(value) ? String(value) : value.toFixed(2);
 }

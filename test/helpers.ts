@@ -3,15 +3,18 @@ import { TokenTable, type Principal } from "../src/core/principal.js";
 import type { SendOptions } from "../src/client.js";
 import { OutboxService } from "../src/outbox/service.js";
 import { SqliteOutboxStore } from "../src/outbox/sqlite_store.js";
+import { Units } from "../src/core/units.js";
 import { createRegistry, type ServerDeps } from "../src/server.js";
 
 export const AGENT: Principal = { name: "agent-test", role: "agent" };
 export const HUMAN: Principal = { name: "operator", role: "human" };
 export const SERVICE: Principal = { name: "worker", role: "service" };
 
+export const TEST_ICO = "12345678";
+
 export function testConfig(overrides: Partial<ConnectorConfig> = {}): ConnectorConfig {
   return {
-    pohoda: { url: "http://pohoda.test:444", username: "u", password: "p", ico: "12345678", timeout: 1000, maxRetries: 0 },
+    units: [{ ico: TEST_ICO, mserver: { url: "http://pohoda.test:444", username: "u", password: "p", timeout: 1000, maxRetries: 0 } }],
     writeMode: "approval",
     allowDelete: false,
     autoSendOnApprove: false,
@@ -82,13 +85,15 @@ export function errorResponse(itemId: string, note: string): string {
 
 export async function harness(overrides: Partial<ConnectorConfig> = {}) {
   const config = testConfig(overrides);
-  const client = new FakeClient(config.pohoda?.ico);
+  // One fake mServer stands in for every unit that has one configured.
+  const client = new FakeClient(config.units[0]?.ico);
+  const units = new Units(config.units, () => client);
   const store = new SqliteOutboxStore(":memory:");
   await store.init();
-  const outbox = new OutboxService(store, config, client);
-  const deps = { config, client, outbox } as unknown as ServerDeps;
+  const outbox = new OutboxService(store, config, units);
+  const deps: ServerDeps = { config, units, outbox };
   const registryFor = (principal: Principal) => createRegistry(deps, principal, false).registry;
-  return { config, client, store, outbox, deps, registryFor };
+  return { config, client, units, store, outbox, deps, registryFor };
 }
 
 export function parseToolJson(result: { content: Array<{ text: string }> }): Record<string, unknown> {
