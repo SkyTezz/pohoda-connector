@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { loadDictionary } from "../src/sql/dictionary.js";
+import { TokenTable } from "../src/core/principal.js";
+import { startHttpServer } from "../src/http/server.js";
 import { ALL_UNITS, buildAggregate, buildSelect, isAllowedDatabase, parseUnitDatabase } from "../src/sql/reader.js";
+import { AGENT, harness } from "./helpers.js";
 
 const dictionary = loadDictionary();
 
@@ -73,6 +76,35 @@ describe("SQL reads across accounting-unit databases", () => {
     // a custom-named configured database stays the only one readable
     expect(isAllowedDatabase("StwPh_12345678_2025", "Accounting", [ALL_UNITS])).toBe(false);
     expect(isAllowedDatabase("Accounting", "Accounting", [])).toBe(true);
+  });
+});
+
+describe("SQL tools over REST", () => {
+  it("returns rows as parseable data, with the executed SQL kept out of it", async () => {
+    const sqlText = "SELECT TOP (2) [ID], [IDS] FROM [StwPh_12345678_2025].[dbo].[pPK] ORDER BY [ID]";
+    const rows = [
+      { ID: 1, IDS: "3Fv" },
+      { ID: 2, IDS: "5Fp" },
+    ];
+    const token = "agent-token-agent-token-agent-token-1";
+    const base = await harness({
+      http: { host: "127.0.0.1", port: 0, tokens: new TokenTable(new Map([[token, AGENT]])), allowedHosts: [], maxSessions: 10, sessionIdleMs: 60_000 },
+    });
+    const sql = { dictionary, database: "StwPh_12345678_2025", select: async () => ({ rows, sql: sqlText }) };
+    const server = await startHttpServer({ ...base.deps, sql: sql as never });
+    try {
+      const res = await fetch(`http://127.0.0.1:${server.port}/v1/tools/pohoda_sql_select`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ args: { table: "pPK", columns: ["ID", "IDS"], limit: 2 } }),
+      });
+      const body = (await res.json()) as { ok: boolean; data: unknown; text: string };
+      expect(res.status).toBe(200);
+      expect(body.data).toEqual(rows);
+      expect(body.text).toContain(`-- ${sqlText}`);
+    } finally {
+      await server.close();
+    }
   });
 });
 

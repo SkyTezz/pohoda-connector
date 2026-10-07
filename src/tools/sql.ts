@@ -1,7 +1,7 @@
 import { z } from "zod";
 import type { ConnectorContext } from "../core/context.js";
 import type { ToolHost } from "../core/registry.js";
-import { ok, err, jsonResult } from "../core/types.js";
+import { err, jsonResult, type ToolResult } from "../core/types.js";
 import { toIsoDate } from "../core/shared.js";
 import type { SqlReader } from "../sql/reader.js";
 
@@ -107,7 +107,7 @@ export function registerSqlTools(host: ToolHost, ctx: ConnectorContext): void {
     async (q) => {
       try {
         const { rows, sql } = await reader.aggregate(q);
-        return ok(`Groups (${rows.length} rows)\n\n${JSON.stringify(rows, null, 2)}\n\n-- ${sql}`);
+        return rowsResult("Groups", rows, sql);
       } catch (e) {
         return err((e as Error).message);
       }
@@ -141,7 +141,7 @@ export function registerSqlTools(host: ToolHost, ctx: ConnectorContext): void {
         const filtered = account
           ? rows.filter((r) => String(r.UMD ?? "").startsWith(account) || String(r.UD ?? "").startsWith(account))
           : rows;
-        return ok(`Journal (${filtered.length} rows)\n\n${JSON.stringify(filtered, null, 2)}\n\n-- ${sql}`);
+        return rowsResult("Journal", filtered, sql);
       } catch (e) {
         return err((e as Error).message);
       }
@@ -202,10 +202,23 @@ export function registerSqlTools(host: ToolHost, ctx: ConnectorContext): void {
   );
 }
 
+/**
+ * Rows in the first block, the executed SQL in a second one: the REST facade parses `data` from the
+ * first block, and the brackets of the SQL text used to land inside what it tried to parse.
+ */
+function rowsResult(label: string, rows: unknown[], sql: string): ToolResult {
+  return {
+    content: [
+      { type: "text", text: `${label} (${rows.length} rows)\n\n${JSON.stringify(rows, null, 2)}` },
+      { type: "text", text: `-- ${sql}` },
+    ],
+  };
+}
+
 async function runSelect(reader: SqlReader, label: string, q: Parameters<SqlReader["select"]>[0]) {
   try {
     const { rows, sql } = await reader.select(q);
-    return ok(`${label} (${rows.length} rows)\n\n${JSON.stringify(rows, null, 2)}\n\n-- ${sql}`);
+    return rowsResult(label, rows, sql);
   } catch (e) {
     return err((e as Error).message);
   }

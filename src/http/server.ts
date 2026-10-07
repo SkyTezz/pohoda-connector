@@ -217,7 +217,8 @@ function assertAllowedHost(req: IncomingMessage, allowedHosts: string[] | undefi
 /** Tool results carry human-readable text with an embedded JSON payload; expose both. */
 function toolResponse(res: ServerResponse, requestId: string, result: ToolResult): void {
   const text = result.content.map((c) => c.text).join("\n");
-  json(res, result.isError ? HTTP.UNPROCESSABLE : HTTP.OK, { ok: !result.isError, text, data: embeddedJson(text), request_id: requestId });
+  // `data` comes from the first block only: later blocks are commentary (e.g. the SQL a read tool ran).
+  json(res, result.isError ? HTTP.UNPROCESSABLE : HTTP.OK, { ok: !result.isError, text, data: embeddedJson(result.content[0]?.text ?? ""), request_id: requestId });
 }
 
 function embeddedJson(text: string): unknown {
