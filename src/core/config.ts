@@ -32,7 +32,8 @@ export interface HttpConfig {
 }
 
 export interface ConnectorConfig {
-  pohoda: {
+  /** mServer connection; absent on a SQL-only deployment (reads work, every mServer tool is left out). */
+  pohoda?: {
     url: string;
     username: string;
     password: string;
@@ -51,12 +52,17 @@ export interface ConnectorConfig {
   /** `exSystemName` written into every document's extId and the dataPack id prefix. */
   extSystem: string;
   store: { kind: StoreKind; sqlitePath: string; mssql?: MssqlConnection };
-  /** Read-only SQL access to the accounting unit database (StwPh_<ICO>_<year>). */
-  sql?: MssqlConnection & { maxRows: number };
+  /**
+   * Read-only SQL access. `database` (StwPh_<ICO>_<year>) is the default; `allowedIcos` widens reads to other unit
+   * databases of the same installation: empty = the configured unit's other years, a list = those units, `*` = all.
+   */
+  sql?: MssqlConnection & { maxRows: number; allowedIcos: string[] };
   transport: Transport;
   http: HttpConfig;
   /** Principal used on stdio, where there is no bearer token. */
   stdioPrincipal: Principal;
+  /** Source commit this build was made from (set by the image build); null when run from a checkout. */
+  commit: string | null;
 }
 
 export const DEFAULTS = {
@@ -129,6 +135,19 @@ function mssqlFromEnv(env: NodeJS.ProcessEnv, prefix: string): MssqlConnection |
   };
 }
 
+/** mServer settings, or undefined when POHODA_URL is unset. A half-configured mServer (URL without user, password or IČO) fails loudly. */
+function pohodaFromEnv(env: NodeJS.ProcessEnv): ConnectorConfig["pohoda"] {
+  if (!env.POHODA_URL) return undefined;
+  return {
+    url: env.POHODA_URL,
+    username: required(env, "POHODA_USERNAME"),
+    password: required(env, "POHODA_PASSWORD"),
+    ico: required(env, "POHODA_ICO"),
+    timeout: int(env, "POHODA_TIMEOUT", DEFAULTS.pohodaTimeoutMs),
+    maxRetries: int(env, "POHODA_MAX_RETRIES", DEFAULTS.pohodaMaxRetries),
+  };
+}
+
 const FORBIDDEN_TOKEN_KEYS = new Set(["__proto__", "constructor", "prototype"]);
 
 /** Parse CONNECTOR_TOKENS into a Map first — never index a JSON object by attacker-controlled keys. */
@@ -164,6 +183,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ConnectorConfi
     throw new Error("CONNECTOR_STORE=mssql needs CONNECTOR_STORE_MSSQL_SERVER/_DATABASE/_USER/_PASSWORD");
   }
   const sql = mssqlFromEnv(env, "POHODA_SQL");
+  const pohoda = pohodaFromEnv(env);
+  if (!pohoda && !sql) {
+    throw new Error("Missing required environment variable: POHODA_URL (mServer) or POHODA_SQL_SERVER (read-only SQL) — nothing to connect to");
+  }
   const tokens = parseTokens(env.CONNECTOR_TOKENS);
   if (transport === "http" && tokens.size === 0) {
     throw new Error("CONNECTOR_TRANSPORT=http requires CONNECTOR_TOKENS (no anonymous HTTP access)");
@@ -180,21 +203,14 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ConnectorConfi
   }
 
   return {
-    pohoda: {
-      url: required(env, "POHODA_URL"),
-      username: required(env, "POHODA_USERNAME"),
-      password: required(env, "POHODA_PASSWORD"),
-      ico: required(env, "POHODA_ICO"),
-      timeout: int(env, "POHODA_TIMEOUT", DEFAULTS.pohodaTimeoutMs),
-      maxRetries: int(env, "POHODA_MAX_RETRIES", DEFAULTS.pohodaMaxRetries),
-    },
+    pohoda,
     writeMode,
     allowDelete: bool(env, "CONNECTOR_ALLOW_DELETE", false),
     autoSendOnApprove: bool(env, "CONNECTOR_AUTO_SEND_ON_APPROVE", true),
     sandbox,
     extSystem: env.CONNECTOR_EXT_SYSTEM || DEFAULTS.extSystem,
     store: { kind: storeKind, sqlitePath: env.CONNECTOR_SQLITE_PATH || DEFAULTS.sqlitePath, mssql: storeMssql },
-    sql: sql ? { ...sql, maxRows: int(env, "POHODA_SQL_MAX_ROWS", DEFAULTS.sqlMaxRows) } : undefined,
+    sql: sql ? { ...sql, maxRows: int(env, "POHODA_SQL_MAX_ROWS", DEFAULTS.sqlMaxRows), allowedIcos: list(env, "POHODA_SQL_ALLOWED_ICOS") } : undefined,
     transport,
     http: {
       host: httpHost,
@@ -208,5 +224,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ConnectorConfi
       name: env.CONNECTOR_PRINCIPAL_NAME || DEFAULTS.stdioPrincipalName,
       role: oneOf(env, "CONNECTOR_PRINCIPAL_ROLE", ROLES, DEFAULTS.stdioPrincipalRole),
     },
+    commit: env.CONNECTOR_COMMIT || null,
   };
 }

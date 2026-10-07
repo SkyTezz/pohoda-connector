@@ -49,6 +49,8 @@ export function createRegistry(deps: ServerDeps, principal: Principal, withMcp: 
   registerSystemTools(registry, ctx);
   registerProposalTools(registry, ctx);
   registerSqlTools(registry, ctx);
+  // Everything below talks to mServer; a SQL-only deployment does not offer tools that cannot work.
+  if (!deps.config.pohoda) return { registry, mcp };
   registerAddressTools(registry, ctx);
   registerInvoiceTools(registry, ctx);
   registerBankTools(registry, ctx);

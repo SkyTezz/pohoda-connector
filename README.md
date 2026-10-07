@@ -62,9 +62,18 @@ Reads via mServer: `pohoda_list_invoices`, `_bank`, `_vouchers`, `_internal_docs
 `_service`, `_accountancy`, `_balance`, `_movements`, `_vat`, `pohoda_list_settings` (number series, cash registers,
 bank accounts, centres, activities, payment forms, stores, storages, categories, accounting units).
 
-Reads via SQL (when `POHODA_SQL_*` is set): `pohoda_sql_tables`, `pohoda_sql_describe`, `pohoda_sql_select`
-(parameterised, dictionary-validated, `TOP` capped), `pohoda_sql_journal` (pUD), `pohoda_sql_payments` (Uhrady),
-`pohoda_sql_extid` (sExtID lookup by your key), `pohoda_sql_agendas`.
+Reads via SQL (when `POHODA_SQL_*` is set): `pohoda_sql_databases`, `pohoda_sql_tables`, `pohoda_sql_describe`,
+`pohoda_sql_select` (parameterised, dictionary-validated, `TOP` capped), `pohoda_sql_aggregate` (COUNT/SUM/MIN/MAX
+with GROUP BY over one table; money sums as exact decimal text), `pohoda_sql_journal` (pUD), `pohoda_sql_payments`
+(Uhrady), `pohoda_sql_extid` (sExtID lookup by your key), `pohoda_sql_agendas`.
+
+POHODA keeps one database per accounting unit and year (`StwPh_<IČO>_<year>`). `POHODA_SQL_DATABASE` is the default;
+every SQL tool takes `database` to read another one. Which ones is decided by `POHODA_SQL_ALLOWED_ICOS`: empty = the
+configured unit's other years, a comma-separated list of IČO = those units, `*` = every unit of the installation.
+Anything that is not a unit database of the same installation (`master`, `StwPh_sys`, another prefix) is refused.
+
+**SQL-only deployment:** leave `POHODA_URL` unset. The connector starts with SQL reads and the proposal tools only;
+tools that need mServer are not registered, so nothing can be sent to a server that is not there.
 
 Every write tool accepts `idempotencyKey` (1-48 chars `[A-Za-z0-9._:-]`, e.g. `order-invoice:2026000001:r1`) and
 `reason` (shown to the approver).

@@ -29,6 +29,7 @@ export function testConfig(overrides: Partial<ConnectorConfig> = {}): ConnectorC
       sessionIdleMs: 60_000,
     },
     stdioPrincipal: AGENT,
+    commit: null,
     ...overrides,
   };
 }
@@ -81,7 +82,7 @@ export function errorResponse(itemId: string, note: string): string {
 
 export async function harness(overrides: Partial<ConnectorConfig> = {}) {
   const config = testConfig(overrides);
-  const client = new FakeClient(config.pohoda.ico);
+  const client = new FakeClient(config.pohoda?.ico);
   const store = new SqliteOutboxStore(":memory:");
   await store.init();
   const outbox = new OutboxService(store, config, client);

@@ -10,6 +10,9 @@ RUN npx tsc
 FROM node:24-slim
 
 WORKDIR /app
+# Reported by GET /v1/healthz so a deploy can tell the new build from the one it replaced.
+ARG CONNECTOR_COMMIT=""
+ENV CONNECTOR_COMMIT=$CONNECTOR_COMMIT
 ENV NODE_ENV=production \
     CONNECTOR_TRANSPORT=http \
     CONNECTOR_HTTP_HOST=0.0.0.0 \

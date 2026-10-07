@@ -101,7 +101,8 @@ export function startHttpServer(deps: ServerDeps, log: (line: string) => void = 
     try {
       const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
       assertAllowedHost(req, allowedHosts);
-      if (url.pathname === "/v1/healthz" && req.method === "GET") return json(res, HTTP.OK, { ok: true, version: "v1" });
+      // `commit` is what a deploy checks to know the new build answers, not the one it replaced.
+      if (url.pathname === "/v1/healthz" && req.method === "GET") return json(res, HTTP.OK, { ok: true, version: "v1", commit: deps.config.commit });
 
       const principal = principalFromBearer(tokens, req.headers.authorization);
       principalName = principal.name;
