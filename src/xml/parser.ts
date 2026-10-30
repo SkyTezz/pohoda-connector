@@ -125,16 +125,30 @@ function first<T>(value: T | T[] | undefined): T | undefined {
   return Array.isArray(value) ? value[0] : value;
 }
 
+const DOCUMENT_STATE_ERROR = "error";
+
+/** Notes of the import details POHODA marked as errors, e.g. "errno 114: no number series". */
+function documentErrors(d: Record<string, unknown> | undefined): string[] {
+  const details = (first(d?.importDetails as Record<string, unknown> | Record<string, unknown>[] | undefined) ?? {}) as Record<string, unknown>;
+  const list = details.detail === undefined ? [] : Array.isArray(details.detail) ? details.detail : [details.detail];
+  return (list as Record<string, unknown>[])
+    .filter((x) => x.state === DOCUMENT_STATE_ERROR)
+    .map((x) => `errno ${x.errno}: ${String(x.note ?? "").trim()}`);
+}
+
 export function extractImportResult(response: PohodaResponse): ImportResult {
   if (response.items.length === 0) {
     return { success: false, message: "No response items" };
   }
   const item = response.items[0];
-  const ok = item.state === "ok";
+  const d = item.data && typeof item.data === "object" ? (item.data as Record<string, unknown>) : undefined;
+  // The pack item says the XML was read; the document response inside says whether the document was created.
+  const documentState = d?.["@_state"] as string | undefined;
+  const ok = item.state === "ok" && documentState !== DOCUMENT_STATE_ERROR;
   const parts: string[] = [item.note ?? item.state];
+  if (documentState === DOCUMENT_STATE_ERROR) parts.push(...documentErrors(d));
 
-  if (item.data && typeof item.data === "object") {
-    const d = item.data as Record<string, unknown>;
+  if (d) {
     const detail = first(d.producedDetails ?? d.importDetails) as Record<string, unknown> | undefined;
     if (detail && typeof detail === "object") {
       const id = first(detail.id as number | number[] | undefined);
