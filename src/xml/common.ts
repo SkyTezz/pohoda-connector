@@ -159,6 +159,11 @@ export function addNumberRequested(parent: XMLBuilder, ns: string, prefix: strin
     .txt(number);
 }
 
+/** The next number of a POHODA number series (its IDS); the document is linked to the series and the series counter moves on. */
+export function addNumberSeries(parent: XMLBuilder, ns: string, prefix: string, seriesIds: string): void {
+  parent.ele(ns, `${prefix}:number`).ele(NS.typ, "typ:ids").txt(seriesIds);
+}
+
 export function hasPartner(partner: Partner | undefined): partner is Partner {
   return partner != null && Object.values(partner).some((v) => v != null && v !== "");
 }

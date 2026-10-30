@@ -15,6 +15,7 @@ import {
   addExtId,
   addForeignCurrency,
   addNumberRequested,
+  addNumberSeries,
   addPartnerIdentity,
   addPaymentType,
   addRef,
@@ -80,6 +81,7 @@ const advancePaymentSchema = z.object({
 const invoiceHeaderFields = {
   number: z.string().max(32).optional().describe("Requested document number (numberRequested); POHODA's own series when omitted"),
   checkNumberDuplicity: z.boolean().optional().describe("Refuse if the requested number already exists (default true)"),
+  numberSeries: z.string().max(19).optional().describe("Number series code (IDS, e.g. 2611): POHODA gives the next number of that series and links the document to it. Not with number"),
   date: z.string().describe("Issue date (DD.MM.YYYY or YYYY-MM-DD)"),
   dateTax: z.string().optional().describe("Taxable supply date (defaults to date)"),
   dateAccounting: z.string().optional().describe("Accounting date (defaults to date)"),
@@ -134,7 +136,9 @@ function buildInvoiceHeader(inv: XMLBuilder, params: InvoiceHeaderParams & { inv
   const header = inv.ele(NS.inv, "inv:invoiceHeader");
   addExtId(header, NS.inv, "inv", extIds, exSystem, params.extIdText);
   header.ele(NS.inv, "inv:invoiceType").txt(params.invoiceType);
+  if (params.number && params.numberSeries) throw new Error("give number or numberSeries, not both");
   if (params.number) addNumberRequested(header, NS.inv, "inv", params.number, params.checkNumberDuplicity ?? true);
+  if (params.numberSeries) addNumberSeries(header, NS.inv, "inv", params.numberSeries);
   addText(header, NS.inv, "inv:symVar", params.symVar);
   addText(header, NS.inv, "inv:originalDocument", params.originalDocument);
   addText(header, NS.inv, "inv:symPar", params.symPar);

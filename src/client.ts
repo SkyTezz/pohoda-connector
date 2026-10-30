@@ -86,10 +86,7 @@ export class PohodaClient {
 
         const rawBuf = Buffer.from(await resp.arrayBuffer());
         const encoding = resp.headers.get("content-encoding");
-        const dataBuf =
-          encoding === "gzip" ? gunzipSync(rawBuf) :
-          encoding === "deflate" ? safeInflate(rawBuf) :
-          rawBuf;
+        const dataBuf = decodeBody(encoding, rawBuf);
 
         const contentType = resp.headers.get("content-type") ?? "";
         return contentType.toLowerCase().includes("windows-1250") ? decodeFromPohoda(dataBuf) : dataBuf.toString("utf-8");
@@ -139,6 +136,20 @@ export class PohodaClient {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
+}
+
+const GZIP_MAGIC = [0x1f, 0x8b];
+const XML_START = 0x3c; // "<"
+const UTF8_BOM_FIRST = 0xef;
+
+/**
+ * fetch already decompresses gzip/deflate bodies and keeps the Content-Encoding header, so a body that still looks compressed is
+ * the only one decompressed here; decompressing an XML body again failed every send with "incorrect header check" (30. 10. 2026).
+ */
+export function decodeBody(encoding: string | null, buf: Buffer): Buffer {
+  if (encoding === "gzip" && buf[0] === GZIP_MAGIC[0] && buf[1] === GZIP_MAGIC[1]) return gunzipSync(buf);
+  if (encoding === "deflate" && buf.length > 0 && buf[0] !== XML_START && buf[0] !== UTF8_BOM_FIRST) return safeInflate(buf);
+  return buf;
 }
 
 function safeInflate(buf: Buffer): Buffer {
