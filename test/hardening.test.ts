@@ -73,6 +73,19 @@ describe("write gate input hygiene", () => {
     expect(result.content[0].text).toMatch(/outside Windows-1250/);
     expect(await h.outbox.list({})).toHaveLength(0);
   });
+
+  it("refuses a documents folder that leaves the unit's documents folder", async () => {
+    const h = await harness();
+    const reg = h.registryFor(AGENT);
+    const escapes = ["..\\Jiná firma", "Fakturace\\..\\..\\Windows", "\\\\server\\share", "/etc", "C:\\Windows", "Fakturace/../x"];
+    for (const [i, documentsFolder] of escapes.entries()) {
+      await expect(
+        reg.call("pohoda_create_invoice", { invoiceType: "receivedInvoice", date: "2026-09-16", documentsFolder, idempotencyKey: `dir:${i}` }),
+        documentsFolder,
+      ).rejects.toThrow(/documentsFolder/);
+    }
+    expect(await h.outbox.list({})).toHaveLength(0);
+  });
 });
 
 describe("concurrent transitions", () => {

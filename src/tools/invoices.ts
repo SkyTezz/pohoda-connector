@@ -119,7 +119,15 @@ const invoiceHeaderFields = {
   attachments: z
     .array(z.object({ name: z.string().max(255), url: z.string().url().max(255) }))
     .optional()
-    .describe("Links shown on the document's Dokumenty tab, e.g. the scanned original. Verify on a sandbox unit: not yet exercised against a live POHODA."),
+    .describe("URL links on the Dokumenty tab. A link is not the file: to show the original PDF use documentsFolder."),
+  documentsFolder: z
+    .string()
+    .max(255)
+    .regex(/^(?![\\/])(?!.*(?:^|[\\/])\.\.(?:[\\/]|$))[^:*?"<>|]+$/, "a relative folder inside the unit's documents folder, no '..', no drive")
+    .optional()
+    .describe(
+      "Sub-folder of the unit's documents folder bound to this record (typ:files/typ:subFolder), e.g. 'Fakturace\\\\Přijaté faktury\\\\2611\\\\261100038'. Files placed there show on the Dokumenty tab. XML cannot carry the file itself: copy the PDF into that folder.",
+    ),
   centre: refSchema.optional(),
   activity: refSchema.optional(),
   contract: refSchema.optional(),
@@ -210,11 +218,13 @@ function buildInvoiceDetail(
 
 const TOTALS_ORDER = ["priceNone", "priceLow", "priceLowVAT", "priceHigh", "priceHighVAT"] as const;
 
-/** Records of the Dokumenty tab; only URL links, the file stays where it is stored. */
-function buildAttachments(inv: XMLBuilder, attachments: InvoiceHeaderParams["attachments"]): void {
-  if (!attachments?.length) return;
+/** Records of the Dokumenty tab: the bound documents sub-folder (its files are what POHODA shows) and URL links. */
+function buildAttachments(inv: XMLBuilder, params: InvoiceHeaderParams): void {
+  const { attachments, documentsFolder } = params;
+  if (!attachments?.length && !documentsFolder) return;
   const el = inv.ele(NS.inv, "inv:attachments");
-  for (const a of attachments) {
+  if (documentsFolder) el.ele(NS.typ, "typ:files").ele(NS.typ, "typ:subFolder").txt(documentsFolder);
+  for (const a of attachments ?? []) {
     const link = el.ele(NS.typ, "typ:urlAddress");
     link.ele(NS.typ, "typ:name").txt(a.name);
     link.ele(NS.typ, "typ:url").txt(a.url);
@@ -293,7 +303,7 @@ export function registerInvoiceTools(host: ToolHost, ctx: ConnectorContext): voi
         if (p.totals && p.items?.length) throw new Error("give either items or totals: totals are for a document without items");
         buildInvoiceDetail(inv, p.items, p.advancePayments, p.foreignCurrency != null, c.config.extSystem);
         buildInvoiceSummary(inv, p);
-        buildAttachments(inv, p.attachments);
+        buildAttachments(inv, p);
       }),
   });
 

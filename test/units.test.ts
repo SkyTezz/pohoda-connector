@@ -137,6 +137,20 @@ describe("received invoice", () => {
     expect(xml).not.toContain("<inv:invoiceDetail>");
   });
 
+  it("binds the record to its documents sub-folder instead of a link, so the PDF placed there shows on the Dokumenty tab", async () => {
+    const h = await harness({ units });
+    const proposed = parseToolJson(
+      await h.registryFor(AGENT).call("pohoda_create_invoice", {
+        ...received,
+        totals: { priceNone: "593.00" },
+        documentsFolder: "Fakturace\\Přijaté faktury\\2611\\261100039",
+      }),
+    );
+    const xml = (await h.outbox.get(proposed.proposalId as number))!.xml;
+    expect(xml).toContain("<inv:attachments><typ:files><typ:subFolder>Fakturace\\Přijaté faktury\\2611\\261100039</typ:subFolder></typ:files></inv:attachments>");
+    expect(xml).not.toContain("<typ:urlAddress>");
+  });
+
   it("splits a document over lines with their own pre-accounting, and refuses totals next to items", async () => {
     const reg = (await harness({ units })).registryFor(AGENT);
     const items = [
