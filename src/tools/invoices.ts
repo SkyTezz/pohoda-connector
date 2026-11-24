@@ -73,10 +73,17 @@ const invoiceItemSchema = z.object({
 
 const advancePaymentSchema = z.object({
   sourceDocument: sourceDocumentSchema.describe("The advance invoice (zálohová faktura) being deducted; omit for a manual deduction"),
-  amount: z.number().describe("Deducted amount (unit price of the deduction item)"),
+  amount: amountSchema.describe("Deducted amount as a positive number or exact decimal text; the deduction item carries it negated"),
   payVAT: z.boolean().default(false),
-  rateVAT: vatRateEnum.default("none"),
+  rateVAT: z.literal("none").default("none").describe("Only a deduction without VAT is built (Stormware sample invoice_08): price = amount, priceVAT = 0"),
 });
+
+/** Stormware sample invoice_08: the deduction item states the amount negated, with price = unitPrice and priceVAT = 0. */
+export function advanceDeduction(amount: number | string): string {
+  const text = money(amount);
+  if (text.startsWith("-") || /^0+(\.0+)?$/.test(text)) throw new Error(`advance deduction amount must be positive, got ${text}`);
+  return `-${text}`;
+}
 
 const invoiceHeaderFields = {
   number: z.string().max(32).optional().describe("Requested document number (numberRequested); POHODA's own series when omitted"),
@@ -212,7 +219,13 @@ function buildInvoiceDetail(
     el.ele(NS.inv, "inv:quantity").txt("1");
     el.ele(NS.inv, "inv:payVAT").txt(adv.payVAT ? "true" : "false");
     el.ele(NS.inv, "inv:rateVAT").txt(adv.rateVAT);
-    el.ele(NS.inv, foreign ? "inv:foreignCurrency" : "inv:homeCurrency").ele(NS.typ, "typ:unitPrice").txt(money(adv.amount));
+    // typeCurrencyHomeItem2 / typeCurrencyForeignItem2: unitPrice, price and priceVAT are all mandatory.
+    const deducted = advanceDeduction(adv.amount);
+    const price = el.ele(NS.inv, foreign ? "inv:foreignCurrency" : "inv:homeCurrency");
+    price.ele(NS.typ, "typ:unitPrice").txt(deducted);
+    price.ele(NS.typ, "typ:price").txt(deducted);
+    price.ele(NS.typ, "typ:priceVAT").txt("0");
+    price.ele(NS.typ, "typ:priceSum").txt(deducted);
   }
 }
 
@@ -328,6 +341,7 @@ export function registerInvoiceTools(host: ToolHost, ctx: ConnectorContext): voi
         buildInvoiceHeader(inv, p, ids.extIds, c.config.extSystem);
         buildInvoiceDetail(inv, p.items, undefined, p.foreignCurrency != null, c.config.extSystem);
         buildInvoiceSummary(inv, p);
+        buildAttachments(inv, p);
       }),
   });
 

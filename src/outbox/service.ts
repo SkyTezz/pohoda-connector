@@ -28,6 +28,14 @@ const ALLOWED: Record<"approve" | "reject" | "send" | "replay", readonly Proposa
  */
 const DUPLICATE_PATTERN = /duplic/i;
 
+/**
+ * A schema-validation refusal echoes the whole document, whose `numberRequested checkDuplicity="true"` matched the
+ * duplicate pattern (24. 11. 2026: proposal 60 recorded as sent, nothing in POHODA). Only POHODA's own words count.
+ */
+export function withoutEchoedXml(text: string): string {
+  return text.replace(/&lt;[\s\S]*?&gt;/g, " ").replace(/<[^>]*>/g, " ");
+}
+
 /** Where a proposal's XML goes: the mServer of its accounting unit (`Units`). */
 export interface MServerRouter {
   hasMServer(unit: string | undefined): boolean;
@@ -130,7 +138,7 @@ export class OutboxService {
     const item = parsed.items[0];
     const result = extractImportResult(parsed);
     const note = item?.note ?? result.message;
-    const duplicate = !result.success && DUPLICATE_PATTERN.test(`${note} ${JSON.stringify(item?.data ?? "")}`);
+    const duplicate = !result.success && DUPLICATE_PATTERN.test(withoutEchoedXml(`${note} ${JSON.stringify(item?.data ?? "")}`));
 
     if (result.success || duplicate) {
       const sent = await this.store.transition(

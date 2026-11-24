@@ -98,6 +98,19 @@ describe("approval write gate", () => {
     expect(h.client.sent[0].xml).toBe(h.client.sent[1].xml);
   });
 
+  it("schema refusal that echoes checkDuplicity is refused, not a duplicate (24. 11. 2026, proposal 60)", async () => {
+    const h = await harness();
+    const { proposalId } = parseToolJson(await h.registryFor(AGENT).call("pohoda_create_invoice", invoiceArgs));
+    await h.registryFor(HUMAN).call("pohoda_proposal_approve", { id: proposalId });
+    const echoed =
+      "Nepodařila se validace dokumentu podle schématu.&#xA;&lt;inv:number&gt;&lt;typ:numberRequested checkDuplicity=&quot;true&quot;&gt;261100081&lt;/typ:numberRequested&gt;&lt;/inv:number&gt;&#xA;Obsah pro element homeCurrency není úplný.";
+    h.client.queue.push(errorResponse("order-invoice:2026000001:r1", echoed));
+    const sent = parseToolJson(await h.registryFor(HUMAN).call("pohoda_proposal_send", { id: proposalId }));
+    expect(sent.state).toBe("refused");
+    expect(sent.duplicate).toBe(false);
+    expect(sent.error).toMatch(/homeCurrency/);
+  });
+
   it("POHODA refusal → refused with the note kept", async () => {
     const h = await harness();
     const { proposalId } = parseToolJson(await h.registryFor(AGENT).call("pohoda_create_invoice", invoiceArgs));

@@ -95,6 +95,41 @@ describe("document XML", () => {
     expect(corrective).toContain("<inv:quantity>-1</inv:quantity>");
   });
 
+  it("received corrective document binds its documents sub-folder", async () => {
+    const xml = await proposedXml("pohoda_create_corrective_invoice", {
+      sourceDocument: { number: "261100072" },
+      invoiceType: "receivedCorrectiveTax",
+      date: "2026-11-03",
+      text: "Dopravné a poplatky - opravný daňový doklad",
+      totals: { priceNone: "-256.08" },
+      documentsFolder: "Fakturace\\Přijaté faktury\\2614\\261400001",
+      idempotencyKey: "numis-47114983-3381351815-odd",
+    });
+    expect(xml).toContain("<inv:invoiceType>receivedCorrectiveTax</inv:invoiceType>");
+    expect(xml).toContain("<typ:priceNone>-256.08</typ:priceNone>");
+    expect(xml).toContain("<inv:attachments><typ:files><typ:subFolder>Fakturace\\Přijaté faktury\\2614\\261400001</typ:subFolder></typ:files></inv:attachments>");
+  });
+
+  it("advance deduction item carries the amount negated with price and priceVAT (Stormware sample invoice_08)", async () => {
+    const xml = await proposedXml("pohoda_create_invoice", {
+      invoiceType: "receivedInvoice",
+      date: "2026-05-26",
+      text: "Zboží do spotřeby - zlato osvobozené",
+      items: [{ text: "Zlatá mince", unitPrice: "1740908.62", rateVAT: "none" }],
+      advancePayments: [{ sourceDocument: { number: "261800001" }, amount: "1740908.62" }],
+      idempotencyKey: "numis-25780905-260200440-final",
+    });
+    expect(xml).toContain(
+      "<inv:invoiceAdvancePaymentItem><inv:sourceDocument><typ:number>261800001</typ:number></inv:sourceDocument><inv:quantity>1</inv:quantity><inv:payVAT>false</inv:payVAT><inv:rateVAT>none</inv:rateVAT><inv:homeCurrency><typ:unitPrice>-1740908.62</typ:unitPrice><typ:price>-1740908.62</typ:price><typ:priceVAT>0</typ:priceVAT><typ:priceSum>-1740908.62</typ:priceSum></inv:homeCurrency></inv:invoiceAdvancePaymentItem>",
+    );
+  });
+
+  it("advance deduction refuses a non-positive amount and a VAT rate", async () => {
+    const base = { invoiceType: "receivedInvoice", date: "2026-05-26", text: "x", items: [{ text: "x", unitPrice: 1, rateVAT: "none" }] };
+    await expect(proposedXml("pohoda_create_invoice", { ...base, advancePayments: [{ sourceDocument: { number: "261800001" }, amount: "-5" }], idempotencyKey: "adv:neg" })).rejects.toThrow(/positive/);
+    await expect(proposedXml("pohoda_create_invoice", { ...base, advancePayments: [{ sourceDocument: { number: "261800001" }, amount: 5, rateVAT: "high" }], idempotencyKey: "adv:vat" })).rejects.toThrow();
+  });
+
   it("address update/delete target by extId through the filter", async () => {
     const xml = await proposedXml("pohoda_update_address", { target: { extId: "client:4711" }, email: "new@example.com", idempotencyKey: "client:4711:r2" });
     expect(xml).toContain("<adb:actionType><adb:update><ftr:filter><ftr:extId><typ:ids>client:4711</typ:ids><typ:exSystemName>TEST</typ:exSystemName></ftr:extId></ftr:filter></adb:update></adb:actionType>");
