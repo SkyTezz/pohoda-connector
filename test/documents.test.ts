@@ -100,9 +100,8 @@ describe("document XML", () => {
     await expect(
       proposedXml("pohoda_create_corrective_invoice", { ...base, documentsFolder: "Fakturace\\Přijaté faktury\\261400001", idempotencyKey: "odd:folder" }),
     ).rejects.toThrow(/ignores documentsFolder/);
-    const withItem = await proposedXml("pohoda_create_corrective_invoice", { ...base, items: [{ text: "Balíkovna", unitPrice: "-256.08" }], idempotencyKey: "odd:items" });
-    expect(withItem).toContain("<inv:invoiceDetail><inv:invoiceItem><inv:text>Balíkovna</inv:text>");
-    expect(withItem).toContain("<typ:unitPrice>-256.08</typ:unitPrice>");
+    // Live 24. 11. 2026 (proposal 65): an item -256.08 was ignored too, the ODD came out at -7932.
+    await expect(proposedXml("pohoda_create_corrective_invoice", { ...base, items: [{ text: "Balíkovna", unitPrice: "-256.08" }], idempotencyKey: "odd:items" })).rejects.toThrow();
   });
 
   it("advance deduction item carries the amount negated with price and priceVAT (Stormware sample invoice_08)", async () => {
