@@ -330,6 +330,7 @@ export function registerInvoiceTools(host: ToolHost, ctx: ConnectorContext): voi
       sourceDocument: sourceDocumentSchema.describe("The invoice being corrected (number, id or extId)"),
       invoiceType: invoiceTypeEnum.default("issuedCorrectiveTax").describe("Type of the corrective document"),
       ...invoiceHeaderFields,
+      items: z.array(invoiceItemSchema).optional().describe("Corrective items (UNVERIFIED live: whether POHODA takes them instead of copying the source)"),
     },
     summary: (p) => `corrective ${p.invoiceType} to ${p.sourceDocument.number ?? p.sourceDocument.extId ?? p.sourceDocument.id} ${p.date}`,
     build: (p, ids, c) => {
@@ -340,6 +341,7 @@ export function registerInvoiceTools(host: ToolHost, ctx: ConnectorContext): voi
         const corrective = inv.ele(NS.inv, "inv:correctiveDocument");
         addSourceDocument(corrective, NS.typ, "typ:sourceDocument", p.sourceDocument, c.config.extSystem);
         buildInvoiceHeader(inv, p, ids.extIds, c.config.extSystem);
+        buildInvoiceDetail(inv, p.items, undefined, false, c.config.extSystem);
       });
     },
   });
