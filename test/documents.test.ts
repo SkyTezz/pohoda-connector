@@ -87,27 +87,20 @@ describe("document XML", () => {
       sourceDocument: { extId: "order-invoice:2026000001:r1" },
       date: "2026-09-20",
       text: "Opravný daňový doklad",
-      items: [{ text: "Vrácení", quantity: -1, unitPrice: 1290, payVAT: true, rateVAT: "none" }],
       idempotencyKey: "credit:2026000001:1",
     });
     expect(corrective).toContain("<inv:correctiveDocument><typ:sourceDocument><typ:extId>");
     expect(corrective).toContain("<inv:invoiceType>issuedCorrectiveTax</inv:invoiceType>");
-    expect(corrective).toContain("<inv:quantity>-1</inv:quantity>");
+    expect(corrective).not.toContain("<inv:invoiceDetail>");
   });
 
-  it("received corrective document binds its documents sub-folder", async () => {
-    const xml = await proposedXml("pohoda_create_corrective_invoice", {
-      sourceDocument: { number: "261100072" },
-      invoiceType: "receivedCorrectiveTax",
-      date: "2026-11-03",
-      text: "Dopravné a poplatky - opravný daňový doklad",
-      totals: { priceNone: "-256.08" },
-      documentsFolder: "Fakturace\\Přijaté faktury\\2614\\261400001",
-      idempotencyKey: "numis-47114983-3381351815-odd",
-    });
-    expect(xml).toContain("<inv:invoiceType>receivedCorrectiveTax</inv:invoiceType>");
-    expect(xml).toContain("<typ:priceNone>-256.08</typ:priceNone>");
-    expect(xml).toContain("<inv:attachments><typ:files><typ:subFolder>Fakturace\\Přijaté faktury\\2614\\261400001</typ:subFolder></typ:files></inv:attachments>");
+  it("corrective document refuses what POHODA ignores there (live 24. 11. 2026: totals -256.08 became -7932, folder unbound)", async () => {
+    const base = { sourceDocument: { number: "261100072" }, invoiceType: "receivedCorrectiveTax", date: "2026-11-03", text: "ODD" };
+    await expect(proposedXml("pohoda_create_corrective_invoice", { ...base, totals: { priceNone: "-256.08" }, idempotencyKey: "odd:totals" })).rejects.toThrow(/ignores totals/);
+    await expect(
+      proposedXml("pohoda_create_corrective_invoice", { ...base, documentsFolder: "Fakturace\\Přijaté faktury\\261400001", idempotencyKey: "odd:folder" }),
+    ).rejects.toThrow(/ignores documentsFolder/);
+    await expect(proposedXml("pohoda_create_corrective_invoice", { ...base, items: [{ text: "x", unitPrice: 1 }], idempotencyKey: "odd:items" })).rejects.toThrow();
   });
 
   it("advance deduction item carries the amount negated with price and priceVAT (Stormware sample invoice_08)", async () => {

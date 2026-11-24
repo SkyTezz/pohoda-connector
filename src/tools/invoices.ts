@@ -323,26 +323,25 @@ export function registerInvoiceTools(host: ToolHost, ctx: ConnectorContext): voi
   registerWriteTool(host, ctx, {
     name: "pohoda_create_corrective_invoice",
     description:
-      "Create an opravný daňový doklad (corrective tax document / credit note) to an existing invoice via the correctiveDocument block: POHODA finds the source document and creates the corrective document from the header and items given. Verify on a sandbox unit before production use.",
+      "Create an opravný daňový doklad (corrective tax document / credit note) linked to an existing invoice via the correctiveDocument block. POHODA copies the WHOLE source document (all amounts) and takes only invoiceHeader fields from the import (invoice.xsd: other elements are ignored; live 24. 11. 2026: totals -256.08 gave -7932, the documents folder was not bound). A partial amount is set by hand in POHODA; the PDF goes to the record's default folder <agenda folder>\\<number>.",
     kind: "create",
     agenda: "invoice",
     schema: {
       sourceDocument: sourceDocumentSchema.describe("The invoice being corrected (number, id or extId)"),
       invoiceType: invoiceTypeEnum.default("issuedCorrectiveTax").describe("Type of the corrective document"),
       ...invoiceHeaderFields,
-      items: z.array(invoiceItemSchema).optional().describe("Corrective items (negative quantities reduce the original)"),
     },
     summary: (p) => `corrective ${p.invoiceType} to ${p.sourceDocument.number ?? p.sourceDocument.extId ?? p.sourceDocument.id} ${p.date}`,
-    build: (p, ids, c) =>
-      buildImportDoc({ ico: c.client.ico, note: `corrective to ${p.sourceDocument.number ?? ""}` }, ids, (item) => {
+    build: (p, ids, c) => {
+      const ignored = (["totals", "documentsFolder", "attachments", "foreignCurrency"] as const).filter((key) => p[key] !== undefined);
+      if (ignored.length) throw new Error(`POHODA ignores ${ignored.join(", ")} on a corrective document (it copies the source); set the amount by hand`);
+      return buildImportDoc({ ico: c.client.ico, note: `corrective to ${p.sourceDocument.number ?? ""}` }, ids, (item) => {
         const inv = item.ele(NS.inv, "inv:invoice").att("version", "2.0");
         const corrective = inv.ele(NS.inv, "inv:correctiveDocument");
         addSourceDocument(corrective, NS.typ, "typ:sourceDocument", p.sourceDocument, c.config.extSystem);
         buildInvoiceHeader(inv, p, ids.extIds, c.config.extSystem);
-        buildInvoiceDetail(inv, p.items, undefined, p.foreignCurrency != null, c.config.extSystem);
-        buildInvoiceSummary(inv, p);
-        buildAttachments(inv, p);
-      }),
+      });
+    },
   });
 
   registerWriteTool(host, ctx, {
